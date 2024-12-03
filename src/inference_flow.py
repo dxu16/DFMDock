@@ -19,7 +19,7 @@ from utils.geometry import axis_angle_to_matrix, matrix_to_axis_angle
 from utils.residue_constants import restype_3to1, sequence_to_onehot, restype_order_with_x
 from utils.metrics import compute_metrics
 from utils.crop import get_position_matrix
-from models.DFMDock import DFMDock
+from models.FlowMatchingDock import FlowMatchingDock
 
 
 def set_seed(seed=42):
@@ -292,7 +292,7 @@ def get_clash_force(rec_pos, lig_pos):
 #----------------------------------------------------------------------------
 # Sampler
 
-def Euler_Maruyama_sampler(
+def sampler(
     model,
     batch,
     num_steps=40,
@@ -300,9 +300,6 @@ def Euler_Maruyama_sampler(
     batch_size=1, 
     eps=1e-3,
     use_clash_force=False,
-    noise_annealing=False,
-    tr_noise_scale=0.5,
-    rot_noise_scale=0.5,
 ):
 
     # initialize time steps
@@ -316,7 +313,7 @@ def Euler_Maruyama_sampler(
     # randomly initialize coordinates
     lig_pos, tr_update, rot_update = randomize_pose(rec_pos, lig_pos)
     
-    # run reverse sde 
+    # predict
     with torch.no_grad():
         for i, time_step in enumerate(tqdm((time_steps))):  
             # get current time step 
@@ -330,30 +327,8 @@ def Euler_Maruyama_sampler(
             # get predictions
             output = model(batch) 
 
-            if noise_annealing:
-                tr_noise_scale = time_step
-                rot_noise_scale = time_step
-            else:
-                if not is_last:
-                    tr_noise_scale = tr_noise_scale
-                    rot_noise_scale = rot_noise_scale
-                else:
-                    tr_noise_scale = 0.0
-                    rot_noise_scale = 0.0
-
-            rot = model.so3_diffuser.torch_reverse(
-                score_t=output["rot_score"].detach(),
-                t=t.item(),
-                dt=dt,
-                noise_scale=rot_noise_scale,
-            )
-
-            tr = model.r3_diffuser.torch_reverse(
-                score_t=output["tr_score"].detach(),
-                t=t.item(),
-                dt=dt,
-                noise_scale=tr_noise_scale,
-            )
+            rot = output["rot_pred"] * dt
+            tr = output["tr_pred"] * dt
 
             lig_pos = modify_coords(lig_pos, rot, tr)
 
@@ -380,15 +355,12 @@ def run(args, model, inputs, batch, device):
     id = inputs["id"]
 
     for i in range(args.num_samples):
-        rec_pos, lig_pos, rot_update, tr_update, output = Euler_Maruyama_sampler(
+        rec_pos, lig_pos, rot_update, tr_update, output = sampler(
             model=model, 
             batch=batch.copy(), 
             num_steps=args.num_steps,
             device=device,
             use_clash_force=args.use_clash_force,
-            noise_annealing=args.noise_annealing,
-            tr_noise_scale=args.tr_noise_scale,
-            rot_noise_scale=args.rot_noise_scale,
         )
         
         # get metrics
@@ -510,7 +482,7 @@ def inference(in_pdb_1, in_pdb_2):
     esm_model = esm_model.to(device).eval()
     
     # load score model
-    model = DFMDock.load_from_checkpoint(
+    model = FlowMatchingDock.load_from_checkpoint(
         str(Path("./weights/pinder_0.ckpt")), 
         map_location=device,
     )
@@ -544,7 +516,7 @@ def inference(in_pdb_1, in_pdb_2):
 
     # run 
     for i in range(num_samples):
-        rec_pos, lig_pos, rot_update, tr_update, outputs = Euler_Maruyama_sampler(
+        rec_pos, lig_pos, rot_update, tr_update, outputs = sampler(
             model=model, 
             batch=batch.copy(), 
             num_steps=num_steps,
