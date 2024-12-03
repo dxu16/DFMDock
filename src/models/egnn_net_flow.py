@@ -310,7 +310,6 @@ class EGNN_Net(nn.Module):
         edge_dim = conf.edge_dim
         inner_dim = conf.inner_dim
         embed_t = conf.embed_t
-        t_embed_dim = conf.t_embed_dim
         depth = conf.depth
         dropout = conf.dropout
         normalize = conf.normalize
@@ -381,8 +380,8 @@ class EGNN_Net(nn.Module):
 
         if embed_t:
             self.t_hidden_dim = min(node_dim, edge_dim)
-            self.t_embed_edge = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=t_embed_dim)
-            self.t_embed_node = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=t_embed_dim)
+            self.t_embed_edge = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
+            self.t_embed_node = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
 
         # # timestep embedding
         # self.t_embed = nn.Sequential(
