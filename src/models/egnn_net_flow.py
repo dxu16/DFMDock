@@ -136,6 +136,16 @@ def get_knn_and_sample(points, knn=20, sample_size=40, epsilon=1e-10):
     
     return knn_indices, sampled_points_indices
 
+def inertia(self, X):
+    """
+    modified from https://github.com/wengong-jin/DSMBind/blob/66a3877b758b7ede9eb60110ee2be530345563d2/bindenergy/models/energy.py#L19
+    """
+    inner = (X ** 2).sum(dim=-1)
+    inner = inner[...,None,None] * torch.eye(3).to(X)  # [B,N,3,3]
+    outer = X.unsqueeze(-2) * X.unsqueeze(-1)  # [B,N,3,3]
+    inertia = (inner - outer)
+    return inertia.sum(dim=-3)  # [B,3,3]
+
 #----------------------------------------------------------------------------
 # Edge seletion functions
 
@@ -299,6 +309,8 @@ class EGNN_Net(nn.Module):
         node_dim = conf.node_dim
         edge_dim = conf.edge_dim
         inner_dim = conf.inner_dim
+        embed_t = conf.embed_t
+        t_embed_dim = conf.t_embed_dim
         depth = conf.depth
         dropout = conf.dropout
         normalize = conf.normalize
@@ -367,32 +379,37 @@ class EGNN_Net(nn.Module):
             nn.Linear(2*node_dim, 1),
         )
 
-        # timestep embedding
-        self.t_embed = nn.Sequential(
-            GaussianFourierProjection(embed_dim=inner_dim),
-            nn.Linear(inner_dim, inner_dim, bias=False),
-            nn.Sigmoid(),
-        )
+        if embed_t:
+            self.t_hidden_dim = min(node_dim, edge_dim)
+            self.t_embed_edge = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=t_embed_dim)
+            self.t_embed_node = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=t_embed_dim)
 
-        # tr_scale mlp
-        self.tr_scale = nn.Sequential(
-            nn.Linear(inner_dim + 1, inner_dim, bias=False),
-            nn.LayerNorm(inner_dim),
-            nn.Dropout(dropout),
-            nn.SiLU(),
-            nn.Linear(inner_dim, 1, bias=False),
-            nn.Softplus()
-        )
+        # # timestep embedding
+        # self.t_embed = nn.Sequential(
+        #     GaussianFourierProjection(embed_dim=inner_dim),
+        #     nn.Linear(inner_dim, inner_dim, bias=False),
+        #     nn.Sigmoid(),
+        # )
 
-        # rot_scale mlp
-        self.rot_scale = nn.Sequential(
-            nn.Linear(inner_dim + 1, inner_dim, bias=False),
-            nn.LayerNorm(inner_dim),
-            nn.Dropout(dropout),
-            nn.SiLU(),
-            nn.Linear(inner_dim, 1, bias=False),
-            nn.Softplus()
-        )
+        # # tr_scale mlp
+        # self.tr_scale = nn.Sequential(
+        #     nn.Linear(inner_dim + 1, inner_dim, bias=False),
+        #     nn.LayerNorm(inner_dim),
+        #     nn.Dropout(dropout),
+        #     nn.SiLU(),
+        #     nn.Linear(inner_dim, 1, bias=False),
+        #     nn.Softplus()
+        # )
+
+        # # rot_scale mlp
+        # self.rot_scale = nn.Sequential(
+        #     nn.Linear(inner_dim + 1, inner_dim, bias=False),
+        #     nn.LayerNorm(inner_dim),
+        #     nn.Dropout(dropout),
+        #     nn.SiLU(),
+        #     nn.Linear(inner_dim, 1, bias=False),
+        #     nn.Softplus()
+        # )
 
         self.apply(self._init_weights)
 
@@ -426,10 +443,14 @@ class EGNN_Net(nn.Module):
         # node feature embedding
         x = torch.cat([rec_x, lig_x], dim=0)
         node = self.single_embed(x) # [n, c]
+        if self.embed_t:
+            node[:, :self.t_hidden_dim] += self.t_embed_node(t)
 
         # edge feature embedding
         spatial_matrix = get_spatial_matrix(pos)
         edge = self.spatial_embed(spatial_matrix) + self.positional_embed(position_matrix)
+        if self.embed_t:
+            edge[:, :self.t_hidden_dim] += self.t_embed_edge(t)
 
         # sample edge_index and get edge_attr
         edge_index, edge_attr = get_knn_and_sample_graph(pos[..., 1, :], edge)
@@ -476,24 +497,26 @@ class EGNN_Net(nn.Module):
 
         # rotation
         r = lig_pos[..., 1, :].detach()
+        I_lig = inertia(r)
         if self.agg == 'mean':
             rot_pred = torch.cross(r, f, dim=-1).mean(dim=0, keepdim=True)
         else:
             rot_pred = torch.cross(r, f, dim=-1).sum(dim=0, keepdim=True)
+        rot_pred = torch.linalg.solve(I_lig, rot_pred)
 
-        # scale
-        t = self.t_embed(t)
-        tr_norm = torch.linalg.vector_norm(tr_pred, keepdim=True)
-        tr_score = tr_pred / (tr_norm + 1e-6) * self.tr_scale(torch.cat([tr_norm, t], dim=-1))
-        rot_norm = torch.linalg.vector_norm(rot_pred, keepdim=True)
-        rot_score = rot_pred / (rot_norm + 1e-6) * self.rot_scale(torch.cat([rot_norm, t], dim=-1))
+        # # scale
+        # t = self.t_embed(t)
+        # tr_norm = torch.linalg.vector_norm(tr_pred, keepdim=True)
+        # tr_score = tr_pred / (tr_norm + 1e-6) * self.tr_scale(torch.cat([tr_norm, t], dim=-1))
+        # rot_norm = torch.linalg.vector_norm(rot_pred, keepdim=True)
+        # rot_score = rot_pred / (rot_norm + 1e-6) * self.rot_scale(torch.cat([rot_norm, t], dim=-1))
 
         if predict:
             num_clashes = get_clashes(D)
 
             outputs = {
-                "tr_score": tr_score,
-                "rot_score": rot_score,
+                "tr_pred": tr_pred,
+                "rot_pred": rot_pred,
                 "energy": energy,
                 "f": f,
                 "num_clashes": num_clashes,
@@ -518,8 +541,8 @@ class EGNN_Net(nn.Module):
         dedx = -dedx[..., 1, :] # F / kT
         
         outputs = {
-            "tr_score": tr_score,
-            "rot_score": rot_score,
+            "tr_pred": tr_pred,
+            "rot_pred": rot_pred,
             "energy": energy,
             "f": f,
             "dedx": dedx,

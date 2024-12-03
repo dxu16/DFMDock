@@ -9,7 +9,7 @@ from torch.utils import data
 from torch_geometric.loader import DataLoader
 from omegaconf import DictConfig
 from datasets.docking_dataset import DockingDataset
-from models.egnn_net import EGNN_Net
+from models.egnn_net_flow import EGNN_Net
 from utils.so3_diffuser import SO3Diffuser 
 from utils.r3_diffuser import R3Diffuser 
 from utils.geometry import axis_angle_to_matrix
@@ -19,11 +19,10 @@ from utils.loss import distogram_loss
 #----------------------------------------------------------------------------
 # Main wrapper for training the model
 
-class DFMDock(pl.LightningModule):
+class FlowMatchingDock(pl.LightningModule):
     def __init__(
         self,
         model,
-        diffuser,
         experiment,
     ):
         super().__init__()
@@ -56,11 +55,16 @@ class DFMDock(pl.LightningModule):
         self.perturb_rot = experiment.perturb_rot
         self.separate_rot_loss = experiment.separate_rot_loss
 
-        # diffuser
-        if self.perturb_tr:
-            self.r3_diffuser = R3Diffuser(diffuser.r3)
-        if self.perturb_rot:
-            self.so3_diffuser = SO3Diffuser(diffuser.so3)
+        # # diffuser
+        # if self.perturb_tr:
+        #     self.r3_diffuser = R3Diffuser(diffuser.r3)
+        # if self.perturb_rot:
+        #     self.so3_diffuser = SO3Diffuser(diffuser.so3)
+
+        self.tr_sigma_max = experiment.tr_sigma_max
+        self.tr_sigma_min = experiment.tr_sigma_min
+        self.rot_sigma_max = experiment.rot_sigma_max
+        self.rot_sigma_min = experiment.rot_sigma_min
 
         # net
         self.net = EGNN_Net(model)
@@ -82,19 +86,24 @@ class DFMDock(pl.LightningModule):
 
             # sample perturbation for translation and rotation
             if self.perturb_tr:
-                tr_score_scale = self.r3_diffuser.score_scaling(t.item())
-                tr_update, tr_score_gt = self.r3_diffuser.forward_marginal(t.item())
+                # tr_score_scale = self.r3_diffuser.score_scaling(t.item())
+                # tr_update, tr_score_gt = self.r3_diffuser.forward_marginal(t.item())
+                tr_update = np.random.randn(1,3) * (self.tr_sigma_max - self.tr_sigma_min) * t
                 tr_update = torch.from_numpy(tr_update).float().to(self.device)
-                tr_score_gt = torch.from_numpy(tr_score_gt).float().to(self.device)
+                # tr_score_gt = torch.from_numpy(tr_score_gt).float().to(self.device)
             else:
                 tr_update = np.zeros(3)
                 tr_update = torch.from_numpy(tr_update).float().to(self.device)
 
             if self.perturb_rot:
-                rot_score_scale = self.so3_diffuser.score_scaling(t.item())
-                rot_update, rot_score_gt = self.so3_diffuser.forward_marginal(t.item())
+                # rot_score_scale = self.so3_diffuser.score_scaling(t.item())
+                # rot_update, rot_score_gt = self.so3_diffuser.forward_marginal(t.item())
+                axis = np.random.randn(1,3)
+                axis = axis / np.linalg.norm(axis)
+                angle = np.random.randn(1) * (self.rot_sigma_max - self.rot_sigma_min) * t
+                rot_update = axis * angle
                 rot_update = torch.from_numpy(rot_update).float().to(self.device)
-                rot_score_gt = torch.from_numpy(rot_score_gt).float().to(self.device)
+                # rot_score_gt = torch.from_numpy(rot_score_gt).float().to(self.device)
             else:
                 rot_update = np.zeros(3)
                 rot_update = torch.from_numpy(rot_update).float().to(self.device)
@@ -128,8 +137,8 @@ class DFMDock(pl.LightningModule):
             outputs = self.net(batch)
 
             # grab some outputs
-            tr_score = outputs["tr_score"]
-            rot_score = outputs["rot_score"]
+            tr_pred = outputs["tr_pred"]
+            rot_pred = outputs["rot_pred"]
             f = outputs["f"]
             dedx = outputs["dedx"]
             energy_noised = outputs["energy"]
@@ -152,47 +161,47 @@ class DFMDock(pl.LightningModule):
             outputs = self.net(batch, predict=True)
 
             # grab some outputs
-            tr_score = outputs["tr_score"]
-            rot_score = outputs["rot_score"]
+            tr_pred = outputs["tr_pred"]
+            rot_pred = outputs["rot_pred"]
             energy_noised = outputs["energy"]
             
             # energy conservation loss
             ec_loss = torch.tensor(0.0, device=self.device)
 
-        mse_loss_fn = nn.MSELoss()
+        # mse_loss_fn = nn.MSELoss()
         # translation loss
         if self.perturb_tr:
             if self.separate_tr_loss:
-                gt_tr_angle = torch.norm(tr_score_gt, dim=-1, keepdim=True)
-                gt_tr_axis = tr_score_gt / (gt_tr_angle + 1e-6)
+                gt_tr_norm = torch.norm(tr_update, dim=-1, keepdim=True)
+                gt_tr_axis = tr_update / (gt_tr_norm + 1e-6)
 
-                pred_tr_angle = torch.norm(tr_score, dim=-1, keepdim=True)
-                pred_tr_axis = tr_score / (pred_tr_angle + 1e-6)
+                pred_tr_norm = torch.norm(tr_pred, dim=-1, keepdim=True)
+                pred_tr_axis = tr_pred / (pred_tr_norm + 1e-6)
 
                 tr_axis_loss = torch.mean((pred_tr_axis - gt_tr_axis)**2)
-                tr_angle_loss = torch.mean((pred_tr_angle - gt_tr_angle)**2 / tr_score_scale**2)
-                tr_loss = 0.5 * (tr_axis_loss + tr_angle_loss)
+                tr_norm_loss = torch.mean((pred_tr_norm - gt_tr_norm)**2)
+                tr_loss = 0.5 * (tr_axis_loss + tr_norm_loss)
 
             else:
-                tr_loss = torch.mean((tr_score - tr_score_gt)**2 / tr_score_scale**2)
+                tr_loss = torch.mean((tr_pred - tr_update)**2)
         else:
             tr_loss = torch.tensor(0.0, device=self.device)
 
         # rotation loss
         if self.perturb_rot:
             if self.separate_rot_loss:
-                gt_rot_angle = torch.norm(rot_score_gt, dim=-1, keepdim=True)
-                gt_rot_axis = rot_score_gt / (gt_rot_angle + 1e-6)
+                gt_rot_angle = torch.norm(rot_update, dim=-1, keepdim=True)
+                gt_rot_axis = rot_update / (gt_rot_angle + 1e-6)
 
-                pred_rot_angle = torch.norm(rot_score, dim=-1, keepdim=True)
-                pred_rot_axis = rot_score / (pred_rot_angle + 1e-6)
+                pred_rot_angle = torch.norm(rot_pred, dim=-1, keepdim=True)
+                pred_rot_axis = rot_pred / (pred_rot_angle + 1e-6)
 
                 rot_axis_loss = torch.mean((pred_rot_axis - gt_rot_axis)**2)
-                rot_angle_loss = torch.mean((pred_rot_angle - gt_rot_angle)**2 / rot_score_scale**2)
+                rot_angle_loss = torch.mean((pred_rot_angle - gt_rot_angle)**2)
                 rot_loss = 0.5 * (rot_axis_loss + rot_angle_loss)
 
             else:
-                rot_loss = torch.mean((rot_score - rot_score_gt)**2 / rot_score_scale**2)
+                rot_loss = torch.mean((rot_pred - rot_update)**2)
         else:
             rot_loss = torch.tensor(0.0, device=self.device)
         
@@ -366,9 +375,8 @@ def main(conf: DictConfig):
     #load dataset
     dataloader = DataLoader(subset)
     
-    model = DFMDock(
+    model = FlowMatchingDock(
         model=conf.model, 
-        diffuser=conf.diffuser,
         experiment=conf.experiment
     )
     trainer = pl.Trainer(accelerator='cpu', devices=1, max_epochs=10, inference_mode=False)
