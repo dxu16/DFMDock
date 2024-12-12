@@ -12,6 +12,8 @@ model:
   cut_off: 20.0
   normalize: True
   agg: 'mean'
+  embed_t: True
+  correct_inertia: False
 
 experiment:
   lr: 1e-4
@@ -27,7 +29,10 @@ experiment:
   use_confidence_loss: False
   use_dist_loss: False
   use_interface_loss: False
-  tr_sigma_max: 30.0
-  tr_sigma_min: 0.1
-  rot_sigma_max: 1.5
-  rot_sigma_min: 0.1
+  tr_sigma_max: 5.0
+  tr_sigma_min: 0.01
+  rot_sigma_max: 0.5
+  rot_sigma_min: 0.01
+  restricted_perturb_tr: False
+  com_vec_rot_sigma: 0.8
+  scale_pred_by_t: False

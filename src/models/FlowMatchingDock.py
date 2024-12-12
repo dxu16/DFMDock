@@ -10,8 +10,6 @@ from torch_geometric.loader import DataLoader
 from omegaconf import DictConfig
 from datasets.docking_dataset import DockingDataset
 from models.egnn_net_flow import EGNN_Net
-from utils.so3_diffuser import SO3Diffuser 
-from utils.r3_diffuser import R3Diffuser 
 from utils.geometry import axis_angle_to_matrix
 from utils.crop import get_crop_idxs, get_crop, get_position_matrix
 from utils.loss import distogram_loss
@@ -66,6 +64,11 @@ class FlowMatchingDock(pl.LightningModule):
         self.rot_sigma_max = experiment.rot_sigma_max
         self.rot_sigma_min = experiment.rot_sigma_min
 
+        self.restricted_perturb_tr = experiment.restricted_perturb_tr
+        self.com_vec_rot_sigma = experiment.com_vec_rot_sigma
+
+        self.scale_pred_by_t = experiment.scale_pred_by_t
+
         # net
         self.net = EGNN_Net(model)
     
@@ -85,28 +88,49 @@ class FlowMatchingDock(pl.LightningModule):
             batch["t"] = t
 
             # sample perturbation for translation and rotation
-            if self.perturb_tr:
-                # tr_score_scale = self.r3_diffuser.score_scaling(t.item())
-                # tr_update, tr_score_gt = self.r3_diffuser.forward_marginal(t.item())
-                tr_update = np.random.randn(1,3) * (self.tr_sigma_max - self.tr_sigma_min) * t
-                tr_update = torch.from_numpy(tr_update).float().to(self.device)
-                # tr_score_gt = torch.from_numpy(tr_score_gt).float().to(self.device)
-            else:
-                tr_update = np.zeros(3)
-                tr_update = torch.from_numpy(tr_update).float().to(self.device)
-
             if self.perturb_rot:
                 # rot_score_scale = self.so3_diffuser.score_scaling(t.item())
                 # rot_update, rot_score_gt = self.so3_diffuser.forward_marginal(t.item())
                 axis = np.random.randn(1,3)
                 axis = axis / np.linalg.norm(axis)
-                angle = np.random.randn(1) * (self.rot_sigma_max - self.rot_sigma_min) * t
+                angle_0 = np.random.randn(1) * (self.rot_sigma_max - self.rot_sigma_min)
+                angle = angle_0 * t.item()
+                rot_0 = axis * angle_0
                 rot_update = axis * angle
+                rot_0 = torch.from_numpy(rot_0).float().to(self.device)
                 rot_update = torch.from_numpy(rot_update).float().to(self.device)
                 # rot_score_gt = torch.from_numpy(rot_score_gt).float().to(self.device)
             else:
                 rot_update = np.zeros(3)
                 rot_update = torch.from_numpy(rot_update).float().to(self.device)
+
+            if self.perturb_tr:
+                if self.restricted_perturb_tr:
+                    com_lig = batch["lig_pos"].mean(dim=-2)
+                    com_rec = batch["rec_pos"].mean(dim=-2)
+                    com_vec = com_lig - com_rec
+                    vec_rot_ang = np.random.randn(1) * self.com_vec_rot_sigma
+                    vec_rot_axis = np.random.randn(1,3)
+                    vec_rot_axis = vec_rot_axis / np.linalg.norm(vec_rot_axis)
+                    vec_rot = vec_rot_axis * vec_rot_ang
+                    vec_rot = torch.from_numpy(vec_rot).float().to(self.device)
+                    tr_dir_vec = com_vec @ axis_angle_to_matrix(vec_rot).T
+                    tr_mag = abs(np.random.randn() * (self.tr_sigma_max - self.tr_sigma_min))
+                    tr_0 = tr_dir_vec * tr_mag
+                    tr_update = tr_0 * t
+                else:
+                    # tr_score_scale = self.r3_diffuser.score_scaling(t.item())
+                    # tr_update, tr_score_gt = self.r3_diffuser.forward_marginal(t.item())
+                    tr_0 = np.random.randn(1,3) * (self.tr_sigma_max - self.tr_sigma_min)
+                    tr_update = tr_0 * t.item()
+                    tr_0 = torch.from_numpy(tr_0).float().to(self.device)
+                    tr_update = torch.from_numpy(tr_update).float().to(self.device)
+                    # tr_score_gt = torch.from_numpy(tr_score_gt).float().to(self.device)
+            else:
+                tr_0 = np.zeros(3)
+                tr_update = np.zeros(3)
+                tr_0 = torch.from_numpy(tr_0).float().to(self.device)
+                tr_update = torch.from_numpy(tr_update).float().to(self.device)
 
             # save gt state
             batch_gt = copy.deepcopy(batch)
@@ -172,36 +196,48 @@ class FlowMatchingDock(pl.LightningModule):
         # translation loss
         if self.perturb_tr:
             if self.separate_tr_loss:
-                gt_tr_norm = torch.norm(tr_update, dim=-1, keepdim=True)
-                gt_tr_axis = tr_update / (gt_tr_norm + 1e-6)
+                gt_tr_norm = torch.norm(tr_0, dim=-1, keepdim=True)
+                gt_tr_axis = tr_0 / (gt_tr_norm + 1e-6)
 
                 pred_tr_norm = torch.norm(tr_pred, dim=-1, keepdim=True)
                 pred_tr_axis = tr_pred / (pred_tr_norm + 1e-6)
 
                 tr_axis_loss = torch.mean((pred_tr_axis - gt_tr_axis)**2)
-                tr_norm_loss = torch.mean((pred_tr_norm - gt_tr_norm)**2)
+                if self.scale_pred_by_t:
+                    tr_norm_loss = torch.mean((pred_tr_norm / (t + 1e-6) - gt_tr_norm)**2)
+                else:
+                    tr_norm_loss = torch.mean((pred_tr_norm - gt_tr_norm)**2)
                 tr_loss = 0.5 * (tr_axis_loss + tr_norm_loss)
 
             else:
-                tr_loss = torch.mean((tr_pred - tr_update)**2)
+                if self.scale_pred_by_t:
+                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - tr_0)**2)
+                else:
+                    tr_loss = torch.mean((tr_pred - tr_0)**2)
         else:
             tr_loss = torch.tensor(0.0, device=self.device)
 
         # rotation loss
         if self.perturb_rot:
             if self.separate_rot_loss:
-                gt_rot_angle = torch.norm(rot_update, dim=-1, keepdim=True)
-                gt_rot_axis = rot_update / (gt_rot_angle + 1e-6)
+                gt_rot_angle = torch.norm(rot_0, dim=-1, keepdim=True)
+                gt_rot_axis = rot_0 / (gt_rot_angle + 1e-6)
 
                 pred_rot_angle = torch.norm(rot_pred, dim=-1, keepdim=True)
                 pred_rot_axis = rot_pred / (pred_rot_angle + 1e-6)
 
                 rot_axis_loss = torch.mean((pred_rot_axis - gt_rot_axis)**2)
-                rot_angle_loss = torch.mean((pred_rot_angle - gt_rot_angle)**2)
+                if self.scale_pred_by_t:
+                    rot_angle_loss = torch.mean((pred_rot_angle / (t + 1e-6) - gt_rot_angle)**2)
+                else:
+                    rot_angle_loss = torch.mean((pred_rot_angle - gt_rot_angle)**2)
                 rot_loss = 0.5 * (rot_axis_loss + rot_angle_loss)
 
             else:
-                rot_loss = torch.mean((rot_pred - rot_update)**2)
+                if self.scale_pred_by_t:
+                    rot_loss = torch.mean((rot_pred / (t + 1e-6) - rot_0)**2)
+                else:
+                    rot_loss = torch.mean((rot_pred - rot_0)**2)
         else:
             rot_loss = torch.tensor(0.0, device=self.device)
         

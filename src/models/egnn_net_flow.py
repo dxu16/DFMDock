@@ -136,7 +136,7 @@ def get_knn_and_sample(points, knn=20, sample_size=40, epsilon=1e-10):
     
     return knn_indices, sampled_points_indices
 
-def inertia(self, X):
+def inertia(X):
     """
     modified from https://github.com/wengong-jin/DSMBind/blob/66a3877b758b7ede9eb60110ee2be530345563d2/bindenergy/models/energy.py#L19
     """
@@ -309,13 +309,14 @@ class EGNN_Net(nn.Module):
         node_dim = conf.node_dim
         edge_dim = conf.edge_dim
         inner_dim = conf.inner_dim
-        embed_t = conf.embed_t
         depth = conf.depth
         dropout = conf.dropout
         normalize = conf.normalize
         
+        self.embed_t = conf.embed_t
         self.agg = conf.agg
         self.cut_off = conf.cut_off
+        self.correct_inertia = conf.correct_inertia
         
         # single init embedding
         self.single_embed = nn.Linear(lm_embed_dim, node_dim, bias=False)
@@ -378,7 +379,7 @@ class EGNN_Net(nn.Module):
             nn.Linear(2*node_dim, 1),
         )
 
-        if embed_t:
+        if self.embed_t:
             self.t_hidden_dim = min(node_dim, edge_dim)
             self.t_embed_edge = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
             self.t_embed_node = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
@@ -496,12 +497,13 @@ class EGNN_Net(nn.Module):
 
         # rotation
         r = lig_pos[..., 1, :].detach()
-        I_lig = inertia(r)
         if self.agg == 'mean':
             rot_pred = torch.cross(r, f, dim=-1).mean(dim=0, keepdim=True)
         else:
             rot_pred = torch.cross(r, f, dim=-1).sum(dim=0, keepdim=True)
-        rot_pred = torch.linalg.solve(I_lig, rot_pred)
+        if self.correct_inertia:
+            I_lig = inertia(r)
+            rot_pred = torch.linalg.solve(I_lig, rot_pred.squeeze(-2)).unsqueeze(-2)
 
         # # scale
         # t = self.t_embed(t)
