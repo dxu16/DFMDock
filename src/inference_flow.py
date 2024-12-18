@@ -292,7 +292,7 @@ def get_clash_force(rec_pos, lig_pos):
 #----------------------------------------------------------------------------
 # Sampler
 
-def sampler(
+def Euler_sampler(
     model,
     batch,
     num_steps=40,
@@ -355,7 +355,7 @@ def run(args, model, inputs, batch, device):
     id = inputs["id"]
 
     for i in range(args.num_samples):
-        rec_pos, lig_pos, rot_update, tr_update, output = sampler(
+        rec_pos, lig_pos, rot_update, tr_update, output = Euler_sampler(
             model=model, 
             batch=batch.copy(), 
             num_steps=args.num_steps,
@@ -516,7 +516,7 @@ def inference(in_pdb_1, in_pdb_2):
 
     # run 
     for i in range(num_samples):
-        rec_pos, lig_pos, rot_update, tr_update, outputs = sampler(
+        rec_pos, lig_pos, rot_update, tr_update, outputs = Euler_sampler(
             model=model, 
             batch=batch.copy(), 
             num_steps=num_steps,
