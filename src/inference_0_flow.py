@@ -354,8 +354,7 @@ class Sampler:
     #             rec_trj.append(rec_pos)         
     #             lig_trj.append(lig_pos)
                 
-    #     # return rec_trj, lig_trj, output["energy"], output["pdockq"], output["num_clashes"]
-    #     return rec_trj, lig_trj, output["energy"]
+        # return rec_trj, lig_trj, output["energy"], output["pdockq"], output["num_clashes"]
      
 
     # def Euler_Maruyama_sampler(
@@ -512,7 +511,8 @@ class Sampler:
                 rec_trj.append(rec_pos)         
                 lig_trj.append(lig_pos)
                 
-        return rec_trj, lig_trj, output["energy"], output["pdockq"], output["num_clashes"]
+        # return rec_trj, lig_trj, output["energy"], output["pdockq"], output["num_clashes"]
+        return rec_trj, lig_trj, output["energy"]
 
 
     def randomize_pose(self, x1, x2):
