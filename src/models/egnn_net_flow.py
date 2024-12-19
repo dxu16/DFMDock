@@ -346,8 +346,8 @@ class EGNN_Net(nn.Module):
             nn.Linear(node_dim, 1, bias=False),
         )
 
-        # force head 
-        self.to_force = nn.Sequential(
+        # velocity head 
+        self.to_vel = nn.Sequential(
             nn.Linear(2*node_dim + 1, node_dim, bias=False),
             nn.LayerNorm(node_dim),
             nn.SiLU(),
@@ -482,25 +482,25 @@ class EGNN_Net(nn.Module):
         # interface residue head
         ires_logits = self.to_ires(node)
 
-        # force
-        fij = unit_vec * self.to_force(interaction) 
+        # velocity
+        vij = unit_vec * self.to_vel(interaction) 
         if self.agg == 'mean':
-            f = fij.mean(dim=0)
+            v = vij.mean(dim=0)
         else:
-            f = fij.sum(dim=0)
+            v = vij.sum(dim=0)
 
         # translation
         if self.agg == 'mean':
-            tr_pred = f.mean(dim=0, keepdim=True)
+            tr_pred = v.mean(dim=0, keepdim=True)
         else:
-            tr_pred = f.sum(dim=0, keepdim=True)
+            tr_pred = v.sum(dim=0, keepdim=True)
 
         # rotation
         r = lig_pos[..., 1, :].detach()
         if self.agg == 'mean':
-            rot_pred = torch.cross(r, f, dim=-1).mean(dim=0, keepdim=True)
+            rot_pred = torch.cross(r, v, dim=-1).mean(dim=0, keepdim=True)
         else:
-            rot_pred = torch.cross(r, f, dim=-1).sum(dim=0, keepdim=True)
+            rot_pred = torch.cross(r, v, dim=-1).sum(dim=0, keepdim=True)
         if self.correct_inertia:
             I_lig = inertia(r)
             rot_pred = torch.linalg.solve(I_lig, rot_pred.squeeze(-2)).unsqueeze(-2)
@@ -519,7 +519,7 @@ class EGNN_Net(nn.Module):
                 "tr_pred": tr_pred,
                 "rot_pred": rot_pred,
                 "energy": energy,
-                "f": f,
+                "v": v,
                 "num_clashes": num_clashes,
                 "dist_logits": dist_logits,
                 "ires_logits": ires_logits,
@@ -545,7 +545,7 @@ class EGNN_Net(nn.Module):
             "tr_pred": tr_pred,
             "rot_pred": rot_pred,
             "energy": energy,
-            "f": f,
+            "v": v,
             "dedx": dedx,
             "dist_logits": dist_logits,
             "ires_logits": ires_logits,

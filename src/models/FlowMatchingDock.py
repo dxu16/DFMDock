@@ -68,6 +68,7 @@ class FlowMatchingDock(pl.LightningModule):
         self.com_vec_rot_sigma = experiment.com_vec_rot_sigma
 
         self.scale_pred_by_t = experiment.scale_pred_by_t
+        self.pred_distance = experiment.pred_distance
 
         # net
         self.net = EGNN_Net(model)
@@ -93,11 +94,11 @@ class FlowMatchingDock(pl.LightningModule):
                 # rot_update, rot_score_gt = self.so3_diffuser.forward_marginal(t.item())
                 axis = np.random.randn(1,3)
                 axis = axis / np.linalg.norm(axis)
-                angle_0 = np.random.randn(1) * (self.rot_sigma_max - self.rot_sigma_min)
-                angle = angle_0 * t.item()
-                rot_0 = axis * angle_0
+                angle_1 = np.random.randn(1) * (self.rot_sigma_max - self.rot_sigma_min)
+                angle = angle_1 * t.item()
+                rot_1 = axis * angle_1
                 rot_update = axis * angle
-                rot_0 = torch.from_numpy(rot_0).float().to(self.device)
+                rot_1 = torch.from_numpy(rot_1).float().to(self.device)
                 rot_update = torch.from_numpy(rot_update).float().to(self.device)
                 # rot_score_gt = torch.from_numpy(rot_score_gt).float().to(self.device)
             else:
@@ -116,21 +117,28 @@ class FlowMatchingDock(pl.LightningModule):
                     vec_rot = torch.from_numpy(vec_rot).float().to(self.device)
                     tr_dir_vec = com_vec @ axis_angle_to_matrix(vec_rot).T
                     tr_mag = abs(np.random.randn() * (self.tr_sigma_max - self.tr_sigma_min))
-                    tr_0 = tr_dir_vec * tr_mag
-                    tr_update = tr_0 * t
+                    tr_1 = tr_dir_vec * tr_mag
+                    tr_update = tr_1 * t
                 else:
                     # tr_score_scale = self.r3_diffuser.score_scaling(t.item())
                     # tr_update, tr_score_gt = self.r3_diffuser.forward_marginal(t.item())
-                    tr_0 = np.random.randn(1,3) * (self.tr_sigma_max - self.tr_sigma_min)
-                    tr_update = tr_0 * t.item()
-                    tr_0 = torch.from_numpy(tr_0).float().to(self.device)
+                    tr_1 = np.random.randn(1,3) * (self.tr_sigma_max - self.tr_sigma_min)
+                    tr_update = tr_1 * t.item()
+                    tr_1 = torch.from_numpy(tr_1).float().to(self.device)
                     tr_update = torch.from_numpy(tr_update).float().to(self.device)
                     # tr_score_gt = torch.from_numpy(tr_score_gt).float().to(self.device)
             else:
-                tr_0 = np.zeros(3)
+                tr_1 = np.zeros(3)
                 tr_update = np.zeros(3)
-                tr_0 = torch.from_numpy(tr_0).float().to(self.device)
+                tr_1 = torch.from_numpy(tr_1).float().to(self.device)
                 tr_update = torch.from_numpy(tr_update).float().to(self.device)
+            
+            if self.pred_distance:
+                gt_rot = rot_update
+                gt_tr = tr_update
+            else:
+                gt_rot = rot_1
+                gt_tr = tr_1
 
             # save gt state
             batch_gt = copy.deepcopy(batch)
@@ -163,24 +171,32 @@ class FlowMatchingDock(pl.LightningModule):
             # grab some outputs
             tr_pred = outputs["tr_pred"]
             rot_pred = outputs["rot_pred"]
-            f = outputs["f"]
+            v = outputs["v"]
             dedx = outputs["dedx"]
             energy_noised = outputs["energy"]
 
             # energy conservation loss
             if self.separate_energy_loss:
-                f_angle = torch.norm(f, dim=-1, keepdim=True)
-                f_axis = f / (f_angle + 1e-6)
+                v_norm = torch.norm(v, dim=-1, keepdim=True)
+                v_axis = v / (v_norm + 1e-6)
+                if self.scale_pred_by_t or self.pred_distance:
+                    f_norm = v_norm
+                else:
+                    f_norm = v_norm * t
+                f_axis = v_axis
 
-                dedx_angle = torch.norm(dedx, dim=-1, keepdim=True)
-                dedx_axis = dedx / (dedx_angle + 1e-6)
+                dedx_norm = torch.norm(dedx, dim=-1, keepdim=True)
+                dedx_axis = dedx / (dedx_norm + 1e-6)
 
                 ec_axis_loss = torch.mean((f_axis - dedx_axis)**2)
-                ec_angle_loss = torch.mean((f_angle - dedx_angle)**2)
+                ec_angle_loss = torch.mean((f_norm - dedx_norm)**2)
                 ec_loss = 0.5 * (ec_axis_loss + ec_angle_loss)
                 
             else:
-                ec_loss = torch.mean((dedx - f)**2)
+                if self.scale_pred_by_t or self.pred_distance:
+                    ec_loss = torch.mean((dedx - v)**2)
+                else:
+                    ec_loss = torch.mean((dedx - v * t)**2)
         else:
             outputs = self.net(batch, predict=True)
 
@@ -196,8 +212,8 @@ class FlowMatchingDock(pl.LightningModule):
         # translation loss
         if self.perturb_tr:
             if self.separate_tr_loss:
-                gt_tr_norm = torch.norm(tr_0, dim=-1, keepdim=True)
-                gt_tr_axis = tr_0 / (gt_tr_norm + 1e-6)
+                gt_tr_norm = torch.norm(gt_tr, dim=-1, keepdim=True)
+                gt_tr_axis = gt_tr / (gt_tr_norm + 1e-6)
 
                 pred_tr_norm = torch.norm(tr_pred, dim=-1, keepdim=True)
                 pred_tr_axis = tr_pred / (pred_tr_norm + 1e-6)
@@ -211,17 +227,17 @@ class FlowMatchingDock(pl.LightningModule):
 
             else:
                 if self.scale_pred_by_t:
-                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - tr_0)**2)
+                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - gt_tr)**2)
                 else:
-                    tr_loss = torch.mean((tr_pred - tr_0)**2)
+                    tr_loss = torch.mean((tr_pred - gt_tr)**2)
         else:
             tr_loss = torch.tensor(0.0, device=self.device)
 
         # rotation loss
         if self.perturb_rot:
             if self.separate_rot_loss:
-                gt_rot_angle = torch.norm(rot_0, dim=-1, keepdim=True)
-                gt_rot_axis = rot_0 / (gt_rot_angle + 1e-6)
+                gt_rot_angle = torch.norm(gt_rot, dim=-1, keepdim=True)
+                gt_rot_axis = gt_rot / (gt_rot_angle + 1e-6)
 
                 pred_rot_angle = torch.norm(rot_pred, dim=-1, keepdim=True)
                 pred_rot_axis = rot_pred / (pred_rot_angle + 1e-6)
@@ -235,9 +251,9 @@ class FlowMatchingDock(pl.LightningModule):
 
             else:
                 if self.scale_pred_by_t:
-                    rot_loss = torch.mean((rot_pred / (t + 1e-6) - rot_0)**2)
+                    rot_loss = torch.mean((rot_pred / (t + 1e-6) - gt_rot)**2)
                 else:
-                    rot_loss = torch.mean((rot_pred - rot_0)**2)
+                    rot_loss = torch.mean((rot_pred - gt_rot)**2)
         else:
             rot_loss = torch.tensor(0.0, device=self.device)
         
