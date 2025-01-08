@@ -100,6 +100,8 @@ class Sampler:
         self.perturb_tr = self.data_conf.perturb_tr
         self.perturb_rot = self.data_conf.perturb_rot
         self.tr_sigma = self.data_conf.tr_sigma
+        self.fixed_disp = self.data_conf.fixed_disp
+        self.displacement = self.data_conf.displacement
         self.uniform_sample = self.data_conf.uniform_sample
         self.non_overlap = self.data_conf.non_overlap
 
@@ -243,8 +245,9 @@ class Sampler:
                 if self.uniform_sample:
                     tr_directions, tr_mag, rot_mats = self.compute_uniform_pose_list(rec_pos, lig_pos, 
                                                                                      self.data_conf.num_samples, 
-                                                                                     self.data_conf.num_rot, self.tr_sigma,
-                                                                                     self.non_overlap)
+                                                                                     self.data_conf.num_rot,
+                                                                                     self.fixed_disp, self.displacement,
+                                                                                     self.tr_sigma, self.non_overlap)
 
                 for i in range(self.data_conf.num_samples):
                     # _rec_pos, _lig_pos, energy, pdockq, num_clashes = self.Euler_Maruyama_sampler(
@@ -570,7 +573,7 @@ class Sampler:
 
         return x1, x2, rot_update, tr_update
 
-    def compute_uniform_pose_list(self, x1, x2, num_pose, num_rot, tr_sigma=10, non_overlap=True, grid_size=5):
+    def compute_uniform_pose_list(self, x1, x2, num_pose, num_rot, fixed_disp, displacement, tr_sigma=10, non_overlap=True, grid_size=5):
         # get center of mass
         c1 = torch.mean(x1[..., 1, :], dim=0)
         c2 = torch.mean(x2[..., 1, :], dim=0)
@@ -604,7 +607,11 @@ class Sampler:
                     x2_roti = x2 @ roti_mat.T
 
                     max_clash = find_max_clash(x2_roti, x1, tr_directions[tr_idx], grid_size=5)
-                    tr_magi = max_clash + torch.abs(torch.randn(1) * tr_sigma)
+                    if fixed_disp:
+                        add_disp = displacement
+                    else:
+                        add_disp = torch.abs(torch.randn(1) * tr_sigma)
+                    tr_magi = max_clash + add_disp
                     tr_mag[tr_idx, rot_idx] = tr_magi
         else:
             tr_mag = torch.abs(torch.randn(num_pts, num_rot)) * tr_sigma
