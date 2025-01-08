@@ -3,20 +3,24 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # import packages
 import os
+from pathlib import Path
 import csv
 import torch
 import numpy as np
+import math
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from dataclasses import dataclass
 from tqdm import tqdm
 from torch.utils import data
 from scipy.spatial.transform import Rotation 
-from models.score_model import Score_Model
-from datasets.ppi_mlsb_dataset import PPIDataset
+from models.FlowMatchingDock import FlowMatchingDock
+from datasets.docking_dataset import DockingDataset
 from utils.geometry import axis_angle_to_matrix, matrix_to_axis_angle
 from utils.pdb import save_PDB, place_fourth_atom 
+from utils.crop import get_position_matrix
 from utils.metrics import compute_metrics
+from utils.clash import find_max_clash
 
 #----------------------------------------------------------------------------
 # Data class for pose
@@ -95,12 +99,15 @@ class Sampler:
         self.data_conf = conf.data
         self.perturb_tr = self.data_conf.perturb_tr
         self.perturb_rot = self.data_conf.perturb_rot
+        self.tr_sigma = self.data_conf.tr_sigma
+        self.uniform_sample = self.data_conf.uniform_sample
+        self.non_overlap = self.data_conf.non_overlap
 
         # set device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # load models
-        self.model = Score_Model.load_from_checkpoint(
+        self.model = FlowMatchingDock.load_from_checkpoint(
             self.data_conf.ckpt, 
             map_location=self.device,
         )
@@ -108,10 +115,10 @@ class Sampler:
         self.model.to(self.device)
         
         # get testset
-        testset = PPIDataset(
+        testset = DockingDataset(
             dataset=self.data_conf.dataset, 
             training=False, 
-            use_esm=self.data_conf.use_esm,
+            use_esm=True,
         )
 
         # load dataset
@@ -190,6 +197,7 @@ class Sampler:
         transforms_list = []
         for batch in tqdm(self.test_dataloader):
             # get batch from testset loader
+
             _id = batch['id'][0]
             rec_seq = batch['rec_seq'][0]
             lig_seq = batch['lig_seq'][0]
@@ -197,15 +205,18 @@ class Sampler:
             lig_x = batch['lig_x'].to(self.device).squeeze(0)
             rec_pos = batch['rec_pos'].to(self.device).squeeze(0)
             lig_pos = batch['lig_pos'].to(self.device).squeeze(0)
-            position_matrix = batch['position_matrix'].to(self.device).squeeze(0)
+            # position_matrix = batch['position_matrix'].to(self.device).squeeze(0)
 
             batch = {
                 "rec_x": rec_x,
                 "lig_x": lig_x,
                 "rec_pos": rec_pos.clone().detach(),
                 "lig_pos": lig_pos.clone().detach(),
-                "position_matrix": position_matrix,
+                "is_homomer": batch["is_homomer"].to(self.device).squeeze(0)
+                # "position_matrix": position_matrix,
             }
+
+            batch = get_position_matrix(batch)
 
             # get ground truth pose
             label = pose(
@@ -228,6 +239,13 @@ class Sampler:
             
             else:
                 # run 
+
+                if self.uniform_sample:
+                    tr_directions, tr_mag, rot_mats = self.compute_uniform_pose_list(rec_pos, lig_pos, 
+                                                                                     self.data_conf.num_samples, 
+                                                                                     self.data_conf.num_rot, self.tr_sigma,
+                                                                                     self.non_overlap)
+
                 for i in range(self.data_conf.num_samples):
                     # _rec_pos, _lig_pos, energy, pdockq, num_clashes = self.Euler_Maruyama_sampler(
                     #     batch=batch,
@@ -235,8 +253,21 @@ class Sampler:
                     #     eps=1e-3,
                     #     ode=self.data_conf.ode,
                     # )
+
+                    # initialize coordinates
+                    if self.uniform_sample:
+                        tr_idx = i // self.data_conf.num_rot
+                        rot_idx = i % self.data_conf.num_rot
+                        tr_update = tr_mag[tr_idx, rot_idx] * tr_directions[tr_idx].unsqueeze(0)
+                        rot_update = rot_mats[tr_idx, rot_idx]
+                        rec_pos_ini, lig_pos_ini = self.update_pose(rec_pos, lig_pos, rot_update, tr_update)
+                    else:
+                        rec_pos_ini, lig_pos_ini, rot_update, tr_update = self.randomize_pose(rec_pos, lig_pos, self.tr_sigma)
+
                     _rec_pos, _lig_pos, energy = self.Euler_sampler(
                         batch=batch,
+                        rec_pos=rec_pos_ini,
+                        lig_pos=lig_pos_ini,
                         batch_size=1,
                         eps=1e-3,
                     )
@@ -448,6 +479,8 @@ class Sampler:
     def Euler_sampler(
         self,
         batch,
+        rec_pos,
+        lig_pos,
         batch_size=1, 
         eps=1e-3,
     ):
@@ -459,19 +492,12 @@ class Sampler:
         t = torch.ones(batch_size, device=self.device)
         time_steps = torch.linspace(1., eps, self.data_conf.num_steps, device=self.device)
         dt = time_steps[0] - time_steps[1]
-
-        # get initial pose
-        rec_pos = batch["rec_pos"] 
-        lig_pos = batch["lig_pos"] 
-
-        # randomly initialize coordinates
-        rec_pos, lig_pos, rot_update, tr_update = self.randomize_pose(rec_pos, lig_pos)
         
         # save initial coordinates 
         rec_trj.append(rec_pos)
         lig_trj.append(lig_pos)
 
-        # run reverse sde 
+        # run reverse ode 
         with torch.no_grad():
             for i, time_step in enumerate(tqdm((time_steps))):  
                 # get current time step 
@@ -515,7 +541,7 @@ class Sampler:
         return rec_trj, lig_trj, output["energy"]
 
 
-    def randomize_pose(self, x1, x2):
+    def randomize_pose(self, x1, x2, tr_sigma=10):
         # get center of mass
         c1 = torch.mean(x1[..., 1, :], dim=0)
         c2 = torch.mean(x2[..., 1, :], dim=0)
@@ -524,7 +550,7 @@ class Sampler:
         rot_update = torch.from_numpy(Rotation.random().as_matrix()).float().to(self.device)
 
         # get trans update
-        tr_update = torch.normal(0.0, 30.0, size=(1, 3), device=self.device)
+        tr_update = torch.normal(0.0, tr_sigma, size=(1, 3), device=self.device)
         #tr_update = torch.from_numpy(sample_sphere(radius=50.0)).float().to(self.device)
 
         # move to origin
@@ -543,6 +569,61 @@ class Sampler:
         rot_update = matrix_to_axis_angle(rot_update.unsqueeze(0))
 
         return x1, x2, rot_update, tr_update
+
+    def compute_uniform_pose_list(self, x1, x2, num_pose, num_rot, tr_sigma=10, non_overlap=True, grid_size=5):
+        # get center of mass
+        c1 = torch.mean(x1[..., 1, :], dim=0)
+        c2 = torch.mean(x2[..., 1, :], dim=0)
+
+        # move to origin
+        x1 = x1 - c1
+        x2 = x2 - c2
+
+        #sunflower trick https://stackoverflow.com/questions/9600801/evenly-distributing-n-points-on-a-sphere/44164075#44164075
+        num_pts = num_pose // num_rot
+        indices = torch.arange(0, num_pts, dtype=float) + 0.5
+
+        phi = torch.arccos(1 - 2 * indices / num_pts)
+        theta = math.pi * (1 + 5 ** 0.5) * indices
+
+        x, y, z = torch.cos(theta) * torch.sin(phi), torch.sin(theta) * torch.sin(phi), torch.cos(phi)
+
+        tr_directions = torch.stack([x, y, z], dim=1)
+
+        rot_axes = torch.cross(tr_directions, tr_directions[0,:].unsqueeze(0))
+        rot_axes[0,:] = torch.cross(tr_directions[0,:], tr_directions[1,:])
+
+        if non_overlap:
+            tr_mag = torch.zeros(num_pts, num_rot)
+            rot_mats = torch.zeros(num_pts, num_rot, 3, 3)
+            for tr_idx in range(num_pts):
+                for rot_idx in range(num_rot):
+                    roti = rot_axes[tr_idx] * (2 * math.pi * rot_idx / num_rot)
+                    roti_mat = axis_angle_to_matrix(roti)
+                    rot_mats[tr_idx, rot_idx] = roti_mat
+                    x2_roti = x2 @ roti_mat.T
+
+                    max_clash = find_max_clash(x2_roti, x1, tr_directions[tr_idx], grid_size=5)
+                    tr_magi = max_clash + torch.abs(torch.randn(1) * tr_sigma)
+                    tr_mag[tr_idx, rot_idx] = tr_magi
+        else:
+            tr_mag = torch.abs(torch.randn(num_pts, num_rot)) * tr_sigma
+        
+        return tr_directions, tr_mag, rot_mats
+
+    def update_pose(self, x1, x2, rot_update, tr_update):
+        # get center of mass
+        c1 = torch.mean(x1[..., 1, :], dim=0)
+        c2 = torch.mean(x2[..., 1, :], dim=0)
+
+        # move to origin
+        x1 = x1 - c1
+        x2 = x2 - c2
+
+        x2 = x2 @ rot_update.T
+        x2 = x2 + tr_update 
+
+        return x1, x2
 
     def modify_coords(self, x, rot, tr):
         center = torch.mean(x[..., 1, :], dim=0, keepdim=True)
