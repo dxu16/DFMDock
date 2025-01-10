@@ -584,21 +584,21 @@ class Sampler:
 
         #sunflower trick https://stackoverflow.com/questions/9600801/evenly-distributing-n-points-on-a-sphere/44164075#44164075
         num_pts = num_pose // num_rot
-        indices = torch.arange(0, num_pts, dtype=float) + 0.5
+        indices = torch.arange(0, num_pts) + 0.5
 
         phi = torch.arccos(1 - 2 * indices / num_pts)
         theta = math.pi * (1 + 5 ** 0.5) * indices
 
         x, y, z = torch.cos(theta) * torch.sin(phi), torch.sin(theta) * torch.sin(phi), torch.cos(phi)
 
-        tr_directions = torch.stack([x, y, z], dim=1)
+        tr_directions = torch.stack([x, y, z], dim=1).to(self.device)
 
-        rot_axes = torch.cross(tr_directions, tr_directions[0,:].unsqueeze(0))
+        rot_axes = torch.cross(tr_directions, tr_directions[0,:].unsqueeze(0)).to(self.device)
         rot_axes[0,:] = torch.cross(tr_directions[0,:], tr_directions[1,:])
 
         if non_overlap:
-            tr_mag = torch.zeros(num_pts, num_rot)
-            rot_mats = torch.zeros(num_pts, num_rot, 3, 3)
+            tr_mag = torch.zeros(num_pts, num_rot).to(self.device)
+            rot_mats = torch.zeros(num_pts, num_rot, 3, 3).to(self.device)
             for tr_idx in range(num_pts):
                 for rot_idx in range(num_rot):
                     roti = rot_axes[tr_idx] * (2 * math.pi * rot_idx / num_rot)

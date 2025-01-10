@@ -2,10 +2,10 @@ import torch
 
 def choose_plane_basis(normal):
     # Choose an arbitrary vector that is not parallel to the normal vector
-    if torch.allclose(normal, torch.tensor([1, 0, 0], dtype=torch.float32)):
-        arbitrary = torch.tensor([0, 1, 0], dtype=torch.float32)
+    if torch.allclose(normal, torch.tensor([1, 0, 0], dtype=torch.float32).to(normal.device)):
+        arbitrary = torch.tensor([0, 1, 0], dtype=torch.float32).to(normal.device)
     else:
-        arbitrary = torch.tensor([1, 0, 0], dtype=torch.float32)
+        arbitrary = torch.tensor([1, 0, 0], dtype=torch.float32).to(normal.device)
     
     # First basis vector: cross product of normal and arbitrary vector
     basis1 = torch.cross(normal, arbitrary)
@@ -80,7 +80,7 @@ def get_clash_force(lig_pos, rec_pos, grid_size, scale=1):
     lig_com = torch.mean(lig_pos, axis=-2)
     rec_com = torch.mean(rec_pos, axis=-2)
     if lig_com == rec_com:
-        direction = torch.array([1, 0, 0])
+        direction = torch.array([1, 0, 0]).to(lig_pos.device)
     else:
         direction = lig_com - rec_com
         direction = direction / torch.linalg.norm(direction)
