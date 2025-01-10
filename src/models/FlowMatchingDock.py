@@ -69,6 +69,7 @@ class FlowMatchingDock(pl.LightningModule):
 
         self.scale_pred_by_t = experiment.scale_pred_by_t
         self.pred_distance = experiment.pred_distance
+        self.scale_f_norm = experiment.scale_f_norm
 
         # net
         self.net = EGNN_Net(model)
@@ -183,6 +184,17 @@ class FlowMatchingDock(pl.LightningModule):
                     f_norm = v_norm
                 else:
                     f_norm = v_norm * t
+                if self.scale_f_norm == "Gaussian_scale":
+                    f_norm = f_norm * torch.exp(-f_norm ** 2 / 8)
+                elif self.scale_f_norm == "ISigmoid_scale":
+                    f_norm = f_norm * torch.sigmoid(-f_norm) * 2
+                elif self.scale_f_norm == "tanh":
+                    f_norm = F.tanh(f_norm / 2)
+                elif self.scale_f_norm == "none":
+                    pass
+                else:
+                    raise ValueError(f"Unknown scale_f_norm: {self.scale_f_norm}")
+
                 f_axis = v_axis
 
                 dedx_norm = torch.norm(dedx, dim=-1, keepdim=True)
@@ -194,9 +206,10 @@ class FlowMatchingDock(pl.LightningModule):
                 
             else:
                 if self.scale_pred_by_t or self.pred_distance:
-                    ec_loss = torch.mean((dedx - v)**2)
+                    e_grad = v
                 else:
-                    ec_loss = torch.mean((dedx - v * t)**2)
+                    e_grad = v * t
+                ec_loss = torch.mean((dedx - e_grad)**2)
         else:
             outputs = self.net(batch, predict=True)
 

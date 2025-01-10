@@ -37,3 +37,4 @@ experiment:
   com_vec_rot_sigma: 0.8
   scale_pred_by_t: False
   pred_distance: False
+  scale_f_norm: 'none'
