@@ -38,3 +38,4 @@ experiment:
   scale_pred_by_t: False
   pred_distance: False
   scale_f_norm: 'none'
+  scale_tr_norm_by_sigma: False

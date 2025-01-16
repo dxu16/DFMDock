@@ -70,6 +70,7 @@ class FlowMatchingDock(pl.LightningModule):
         self.scale_pred_by_t = experiment.scale_pred_by_t
         self.pred_distance = experiment.pred_distance
         self.scale_f_norm = experiment.scale_f_norm
+        self.scale_tr_norm_by_sigma = experiment.scale_tr_norm_by_sigma
 
         # net
         self.net = EGNN_Net(model)
@@ -224,6 +225,11 @@ class FlowMatchingDock(pl.LightningModule):
         # mse_loss_fn = nn.MSELoss()
         # translation loss
         if self.perturb_tr:
+            if self.scale_tr_norm_by_sigma:
+                tr_scaling_factor = self.tr_sigma_max ** 2
+            else:
+                tr_scaling_factor = 1.0
+            
             if self.separate_tr_loss:
                 gt_tr_norm = torch.norm(gt_tr, dim=-1, keepdim=True)
                 gt_tr_axis = gt_tr / (gt_tr_norm + 1e-6)
@@ -236,13 +242,14 @@ class FlowMatchingDock(pl.LightningModule):
                     tr_norm_loss = torch.mean((pred_tr_norm / (t + 1e-6) - gt_tr_norm)**2)
                 else:
                     tr_norm_loss = torch.mean((pred_tr_norm - gt_tr_norm)**2)
-                tr_loss = 0.5 * (tr_axis_loss + tr_norm_loss)
+
+                tr_loss = 0.5 * (tr_axis_loss + tr_norm_loss / tr_scaling_factor)
 
             else:
                 if self.scale_pred_by_t:
-                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - gt_tr)**2)
+                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - gt_tr)**2) / tr_scaling_factor
                 else:
-                    tr_loss = torch.mean((tr_pred - gt_tr)**2)
+                    tr_loss = torch.mean((tr_pred - gt_tr)**2) / tr_scaling_factor
         else:
             tr_loss = torch.tensor(0.0, device=self.device)
 

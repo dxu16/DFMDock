@@ -4,6 +4,7 @@ data:
   test_all: True
   out_pdb: False
   out_trj: False
+  out_ini_pose: False
   get_gt_energy: False
   out_pdb_dir: ./pdbs/
   out_trj_dir: ./trjs/

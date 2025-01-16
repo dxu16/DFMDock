@@ -293,6 +293,17 @@ class Sampler:
                     # metrics.update({'num_clashes': num_clashes.item()})
                     metrics_list.append(metrics)
 
+                    if self.data_conf.out_ini_pose:
+                        ini_pose = pose(
+                            _id=_id,
+                            rec_seq=rec_seq,
+                            lig_seq=lig_seq,
+                            rec_pos=rec_pos_ini.unsqueeze(0),
+                            lig_pos=lig_pos_ini.unsqueeze(0),
+                            index=str(i)+'_ini'
+                        )
+                        self.save_pdb(ini_pose)
+
                     if self.data_conf.out_trj:
                         self.save_trj(pred)
 
