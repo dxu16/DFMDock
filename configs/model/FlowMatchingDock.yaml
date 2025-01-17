@@ -30,7 +30,7 @@ experiment:
   use_dist_loss: False
   use_interface_loss: False
   tr_sigma_max: 5.0
-  tr_sigma_min: 0.01
+  tr_sigma_min: 0.1
   rot_sigma_max: 0.5
   rot_sigma_min: 0.01
   restricted_perturb_tr: False

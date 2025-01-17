@@ -136,11 +136,11 @@ class FlowMatchingDock(pl.LightningModule):
                 tr_update = torch.from_numpy(tr_update).float().to(self.device)
             
             if self.pred_distance:
-                gt_rot = rot_update
-                gt_tr = tr_update
+                gt_rot = -rot_update
+                gt_tr = -tr_update
             else:
-                gt_rot = rot_1
-                gt_tr = tr_1
+                gt_rot = -rot_1
+                gt_tr = -tr_1
 
             # save gt state
             batch_gt = copy.deepcopy(batch)
@@ -226,7 +226,7 @@ class FlowMatchingDock(pl.LightningModule):
         # translation loss
         if self.perturb_tr:
             if self.scale_tr_norm_by_sigma:
-                tr_scaling_factor = self.tr_sigma_max ** 2
+                tr_scaling_factor = (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
             else:
                 tr_scaling_factor = 1.0
             

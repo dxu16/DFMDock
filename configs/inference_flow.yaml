@@ -24,4 +24,5 @@ data:
   uniform_sample: False
   non_overlap: False
   num_rot: 4
+  apply_ini_rand_rot: False
   
