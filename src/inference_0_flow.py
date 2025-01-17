@@ -104,6 +104,7 @@ class Sampler:
         self.displacement = self.data_conf.displacement
         self.uniform_sample = self.data_conf.uniform_sample
         self.non_overlap = self.data_conf.non_overlap
+        self.apply_ini_rand_rot = self.data_conf.apply_ini_rand_rot
 
         # set device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -241,6 +242,11 @@ class Sampler:
             
             else:
                 # run 
+
+                if self.apply_ini_rand_rot:
+                    rot_update = torch.from_numpy(Rotation.random().as_matrix()).float().to(self.device)
+                    lig_com = torch.mean(lig_pos[..., 1, :], dim=0)
+                    lig_pos = (lig_pos - lig_com) @ rot_update.T + lig_com
 
                 if self.uniform_sample:
                     tr_directions, tr_mag, rot_mats = self.compute_uniform_pose_list(rec_pos, lig_pos, 
