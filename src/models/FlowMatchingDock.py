@@ -53,6 +53,8 @@ class FlowMatchingDock(pl.LightningModule):
         self.perturb_rot = experiment.perturb_rot
         self.separate_rot_loss = experiment.separate_rot_loss
 
+        self.use_v_loss = experiment.use_v_loss
+
         # # diffuser
         # if self.perturb_tr:
         #     self.r3_diffuser = R3Diffuser(diffuser.r3)
@@ -70,7 +72,9 @@ class FlowMatchingDock(pl.LightningModule):
         self.scale_pred_by_t = experiment.scale_pred_by_t
         self.pred_distance = experiment.pred_distance
         self.scale_f_norm = experiment.scale_f_norm
-        self.scale_tr_norm_by_sigma = experiment.scale_tr_norm_by_sigma
+        self.scale_tr_loss_by_sigma_max = experiment.scale_tr_loss_by_sigma_max
+        self.scale_tr_loss_by_sigma_t = experiment.scale_tr_loss_by_sigma_t
+        self.use_gt_v_for_e = experiment.use_gt_v_for_e
 
         # net
         self.net = EGNN_Net(model)
@@ -158,6 +162,11 @@ class FlowMatchingDock(pl.LightningModule):
             # get LRMSD
             l_rmsd = get_rmsd(batch["lig_pos"][..., 1, :], batch_gt["lig_pos"][..., 1, :])
 
+            # get vt_gt
+            lig_pos_pert = batch["lig_pos"] - batch["rec_pos"].mean(dim=(0, 1))
+            lig_pos_gt = batch_gt["lig_pos"] - batch_gt["rec_pos"].mean(dim=(0, 1))
+            vt_gt = lig_pos_gt[:, 1, :] - lig_pos_pert[:, 1, :]
+
             # move lig center to origin
             self.move_to_lig_center(batch)
             self.move_to_lig_center(batch_gt)
@@ -179,14 +188,19 @@ class FlowMatchingDock(pl.LightningModule):
 
             # energy conservation loss
             if self.separate_energy_loss:
-                v_norm = torch.norm(v, dim=-1, keepdim=True)
-                v_axis = v / (v_norm + 1e-6)
-                if self.scale_pred_by_t or self.pred_distance:
-                    f_norm = v_norm
+                if not self.use_gt_v_for_e:
+                    v_norm = torch.norm(v, dim=-1, keepdim=True)
+                    v_axis = v / (v_norm + 1e-6)
+                    if self.scale_pred_by_t or self.pred_distance:
+                        f_norm = v_norm
+                    else:
+                        f_norm = v_norm * t
                 else:
-                    f_norm = v_norm * t
-                if self.scale_f_norm == "Gaussian_scale":
-                    f_norm = f_norm * torch.exp(-f_norm ** 2 / 8)
+                    v_norm = torch.norm(vt_gt, dim=-1, keepdim=True)
+                    v_axis = vt_gt / (v_norm + 1e-6)
+                    f_norm = v_norm
+                if self.scale_f_norm == "DSigmoid":
+                    f_norm = torch.sigmoid(f_norm) * (1 - torch.sigmoid(f_norm))
                 elif self.scale_f_norm == "ISigmoid_scale":
                     f_norm = f_norm * torch.sigmoid(-f_norm) * 2
                 elif self.scale_f_norm == "tanh":
@@ -225,10 +239,12 @@ class FlowMatchingDock(pl.LightningModule):
         # mse_loss_fn = nn.MSELoss()
         # translation loss
         if self.perturb_tr:
-            if self.scale_tr_norm_by_sigma:
-                tr_scaling_factor = (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
+            if self.scale_tr_loss_by_sigma_max:
+                tr_loss_scaling_factor = self.tr_sigma_max
+            elif self.scale_tr_loss_by_sigma_t:
+                tr_loss_scaling_factor = (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
             else:
-                tr_scaling_factor = 1.0
+                tr_loss_scaling_factor = 1.0
             
             if self.separate_tr_loss:
                 gt_tr_norm = torch.norm(gt_tr, dim=-1, keepdim=True)
@@ -243,13 +259,13 @@ class FlowMatchingDock(pl.LightningModule):
                 else:
                     tr_norm_loss = torch.mean((pred_tr_norm - gt_tr_norm)**2)
 
-                tr_loss = 0.5 * (tr_axis_loss + tr_norm_loss / tr_scaling_factor)
+                tr_loss = 0.5 * (tr_axis_loss + tr_norm_loss / tr_loss_scaling_factor)
 
             else:
                 if self.scale_pred_by_t:
-                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - gt_tr)**2) / tr_scaling_factor
+                    tr_loss = torch.mean((tr_pred / (t + 1e-6) - gt_tr)**2) / tr_loss_scaling_factor
                 else:
-                    tr_loss = torch.mean((tr_pred - gt_tr)**2) / tr_scaling_factor
+                    tr_loss = torch.mean((tr_pred - gt_tr)**2) / tr_loss_scaling_factor
         else:
             tr_loss = torch.tensor(0.0, device=self.device)
 
@@ -277,6 +293,19 @@ class FlowMatchingDock(pl.LightningModule):
         else:
             rot_loss = torch.tensor(0.0, device=self.device)
         
+        # v loss
+        if self.use_v_loss:
+            if self.scale_pred_by_t or self.pred_distance:
+                v_loss = torch.mean((v - vt_gt)**2)
+            else:
+                v_loss = torch.mean((v * t - vt_gt)**2)
+            if self.scale_tr_loss_by_sigma_max:
+                v_loss = v_loss / self.tr_sigma_max
+            elif self.scale_tr_loss_by_sigma_t:
+                v_loss = v_loss / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min)
+        else:
+            v_loss = torch.tensor(0.0, device=self.device)
+
         # contrastive loss
         # modified from https://github.com/yilundu/ired_code_release/blob/main/diffusion_lib/denoising_diffusion_pytorch_1d.py
         if self.use_contrastive_loss:
@@ -310,10 +339,11 @@ class FlowMatchingDock(pl.LightningModule):
             conf_loss = torch.tensor(0.0, device=self.device)
 
         # total losses
-        loss = tr_loss + rot_loss + 0.1 * (ec_loss + el_loss+ conf_loss + dist_loss + ires_loss)
+        loss = tr_loss + rot_loss + v_loss + 0.1 * (ec_loss + el_loss+ conf_loss + dist_loss + ires_loss)
         losses = {
             "tr_loss": tr_loss, 
             "rot_loss": rot_loss, 
+            "v_loss": v_loss,
             "ec_loss": ec_loss, 
             "el_loss": el_loss, 
             "dist_loss": dist_loss, 

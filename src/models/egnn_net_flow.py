@@ -313,10 +313,12 @@ class EGNN_Net(nn.Module):
         dropout = conf.dropout
         normalize = conf.normalize
         
-        self.embed_t = conf.embed_t
+        self.add_t_embedding = conf.add_t_embedding
         self.agg = conf.agg
         self.cut_off = conf.cut_off
         self.correct_inertia = conf.correct_inertia
+        self.scale_by_t_mlp = conf.scale_by_t_mlp
+        self.sep_t_mlp_for_tr_rot = conf.sep_t_mlp_for_tr_rot
         
         # single init embedding
         self.single_embed = nn.Linear(lm_embed_dim, node_dim, bias=False)
@@ -379,37 +381,39 @@ class EGNN_Net(nn.Module):
             nn.Linear(2*node_dim, 1),
         )
 
-        if self.embed_t:
+        if self.add_t_embedding:
             self.t_hidden_dim = min(node_dim, edge_dim)
             self.t_embed_edge = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
             self.t_embed_node = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
 
-        # # timestep embedding
-        # self.t_embed = nn.Sequential(
-        #     GaussianFourierProjection(embed_dim=inner_dim),
-        #     nn.Linear(inner_dim, inner_dim, bias=False),
-        #     nn.Sigmoid(),
-        # )
+        if self.scale_by_t_mlp:
+            # timestep embedding
+            self.t_embed = nn.Sequential(
+                GaussianFourierProjection(embed_dim=inner_dim),
+                nn.Linear(inner_dim, inner_dim, bias=False),
+                nn.Sigmoid(),
+            )
 
-        # # tr_scale mlp
-        # self.tr_scale = nn.Sequential(
-        #     nn.Linear(inner_dim + 1, inner_dim, bias=False),
-        #     nn.LayerNorm(inner_dim),
-        #     nn.Dropout(dropout),
-        #     nn.SiLU(),
-        #     nn.Linear(inner_dim, 1, bias=False),
-        #     nn.Softplus()
-        # )
+            # tr_scale mlp
+            self.tr_scale = nn.Sequential(
+                nn.Linear(inner_dim + 1, inner_dim, bias=False),
+                nn.LayerNorm(inner_dim),
+                nn.Dropout(dropout),
+                nn.SiLU(),
+                nn.Linear(inner_dim, 1, bias=False),
+                nn.Softplus()
+            )
 
-        # # rot_scale mlp
-        # self.rot_scale = nn.Sequential(
-        #     nn.Linear(inner_dim + 1, inner_dim, bias=False),
-        #     nn.LayerNorm(inner_dim),
-        #     nn.Dropout(dropout),
-        #     nn.SiLU(),
-        #     nn.Linear(inner_dim, 1, bias=False),
-        #     nn.Softplus()
-        # )
+            # rot_scale mlp
+            if self.sep_t_mlp_for_tr_rot:
+                self.rot_scale = nn.Sequential(
+                    nn.Linear(inner_dim + 1, inner_dim, bias=False),
+                    nn.LayerNorm(inner_dim),
+                    nn.Dropout(dropout),
+                    nn.SiLU(),
+                    nn.Linear(inner_dim, 1, bias=False),
+                    nn.Softplus()
+                )
 
         self.apply(self._init_weights)
 
@@ -443,13 +447,13 @@ class EGNN_Net(nn.Module):
         # node feature embedding
         x = torch.cat([rec_x, lig_x], dim=0)
         node = self.single_embed(x) # [n, c]
-        if self.embed_t:
+        if self.add_t_embedding:
             node[:, :self.t_hidden_dim] += self.t_embed_node(t)
 
         # edge feature embedding
         spatial_matrix = get_spatial_matrix(pos)
         edge = self.spatial_embed(spatial_matrix) + self.positional_embed(position_matrix)
-        if self.embed_t:
+        if self.add_t_embedding:
             edge[:, :self.t_hidden_dim] += self.t_embed_edge(t)
 
         # sample edge_index and get edge_attr
@@ -505,12 +509,16 @@ class EGNN_Net(nn.Module):
             I_lig = inertia(r)
             rot_pred = torch.linalg.solve(I_lig, rot_pred.squeeze(-2)).unsqueeze(-2)
 
-        # # scale
-        # t = self.t_embed(t)
-        # tr_norm = torch.linalg.vector_norm(tr_pred, keepdim=True)
-        # tr_score = tr_pred / (tr_norm + 1e-6) * self.tr_scale(torch.cat([tr_norm, t], dim=-1))
-        # rot_norm = torch.linalg.vector_norm(rot_pred, keepdim=True)
-        # rot_score = rot_pred / (rot_norm + 1e-6) * self.rot_scale(torch.cat([rot_norm, t], dim=-1))
+        # scale
+        if self.scale_by_t_mlp:
+            t = self.t_embed(t)
+            tr_norm = torch.linalg.vector_norm(tr_pred, keepdim=True)
+            tr_pred = tr_pred / (tr_norm + 1e-6) * self.tr_scale(torch.cat([tr_norm, t], dim=-1))
+            rot_norm = torch.linalg.vector_norm(rot_pred, keepdim=True)
+            if self.sep_t_mlp_for_tr_rot:
+                rot_pred = rot_pred / (rot_norm + 1e-6) * self.rot_scale(torch.cat([rot_norm, t], dim=-1))
+            else:
+                rot_pred = rot_pred / (rot_norm + 1e-6) * self.tr_scale(torch.cat([rot_norm, t], dim=-1))
 
         if predict:
             num_clashes = get_clashes(D)

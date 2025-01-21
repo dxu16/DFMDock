@@ -12,8 +12,10 @@ model:
   cut_off: 20.0
   normalize: True
   agg: 'mean'
-  embed_t: True
+  add_t_embedding: False
   correct_inertia: False
+  scale_by_t_mlp: True
+  sep_t_mlp_for_tr_rot: False
 
 experiment:
   lr: 1e-4
@@ -29,6 +31,7 @@ experiment:
   use_confidence_loss: False
   use_dist_loss: False
   use_interface_loss: False
+  use_v_loss: False
   tr_sigma_max: 5.0
   tr_sigma_min: 0.1
   rot_sigma_max: 0.5
@@ -38,4 +41,6 @@ experiment:
   scale_pred_by_t: False
   pred_distance: False
   scale_f_norm: 'none'
-  scale_tr_norm_by_sigma: False
+  scale_tr_loss_by_sigma_max: False
+  scale_tr_loss_by_sigma_t: False
+  use_gt_v_for_e: False
