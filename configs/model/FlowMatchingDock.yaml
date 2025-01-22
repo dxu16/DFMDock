@@ -10,6 +10,7 @@ model:
   depth: 6
   dropout: 0.1
   cut_off: 20.0
+  coord_scale: 1.0
   normalize: True
   agg: 'mean'
   add_t_embedding: False

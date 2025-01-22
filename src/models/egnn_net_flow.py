@@ -319,6 +319,7 @@ class EGNN_Net(nn.Module):
         self.correct_inertia = conf.correct_inertia
         self.scale_by_t_mlp = conf.scale_by_t_mlp
         self.sep_t_mlp_for_tr_rot = conf.sep_t_mlp_for_tr_rot
+        self.coord_scale = conf.coord_scale
         
         # single init embedding
         self.single_embed = nn.Linear(lm_embed_dim, node_dim, bias=False)
@@ -428,10 +429,10 @@ class EGNN_Net(nn.Module):
         
     def forward(self, batch, predict=False, return_energy=False):
         # get inputs
-        rec_x = batch["rec_x"] 
-        lig_x = batch["lig_x"] 
-        rec_pos = batch["rec_pos"] 
-        lig_pos = batch["lig_pos"] 
+        rec_x = batch["rec_x"] / self.coord_scale
+        lig_x = batch["lig_x"] / self.coord_scale
+        rec_pos = batch["rec_pos"] / self.coord_scale
+        lig_pos = batch["lig_pos"] / self.coord_scale
         position_matrix = batch["position_matrix"]
         t = batch["t"]
 
@@ -467,7 +468,7 @@ class EGNN_Net(nn.Module):
         h_lig = repeat(node[rec_pos.size(0):], 'm h -> n m h', n=rec_pos.size(0))
         interaction = torch.cat([h_rec, h_lig, D.unsqueeze(-1)], dim=-1)
         energy = self.to_energy(interaction).squeeze(-1) # [R, L]
-        mask_2D = (D < self.cut_off).float() # [R, L]
+        mask_2D = (D < (self.cut_off / self.coord_scale)).float() # [R, L]
 
         if self.agg == 'mean':
             energy = (energy * mask_2D).sum() / mask_2D.sum().clamp(min=1)
@@ -524,10 +525,10 @@ class EGNN_Net(nn.Module):
             num_clashes = get_clashes(D)
 
             outputs = {
-                "tr_pred": tr_pred,
+                "tr_pred": tr_pred * self.coord_scale,
                 "rot_pred": rot_pred,
-                "energy": energy,
-                "v": v,
+                "energy": energy * (self.coord_scale ** 2),
+                "v": v * self.coord_scale,
                 "num_clashes": num_clashes,
                 "dist_logits": dist_logits,
                 "ires_logits": ires_logits,
@@ -550,11 +551,11 @@ class EGNN_Net(nn.Module):
         dedx = -dedx[..., 1, :] # F / kT
         
         outputs = {
-            "tr_pred": tr_pred,
+            "tr_pred": tr_pred * self.coord_scale,
             "rot_pred": rot_pred,
-            "energy": energy,
-            "v": v,
-            "dedx": dedx,
+            "energy": energy * (self.coord_scale ** 2),
+            "v": v * self.coord_scale,
+            "dedx": dedx * self.coord_scale,
             "dist_logits": dist_logits,
             "ires_logits": ires_logits,
             "confidence_logits": confidence_logits,

@@ -240,7 +240,7 @@ class FlowMatchingDock(pl.LightningModule):
         # translation loss
         if self.perturb_tr:
             if self.scale_tr_loss_by_sigma_max:
-                tr_loss_scaling_factor = self.tr_sigma_max
+                tr_loss_scaling_factor = self.tr_sigma_max ** 2
             elif self.scale_tr_loss_by_sigma_t:
                 tr_loss_scaling_factor = (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
             else:
