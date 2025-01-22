@@ -429,8 +429,8 @@ class EGNN_Net(nn.Module):
         
     def forward(self, batch, predict=False, return_energy=False):
         # get inputs
-        rec_x = batch["rec_x"] / self.coord_scale
-        lig_x = batch["lig_x"] / self.coord_scale
+        rec_x = batch["rec_x"]
+        lig_x = batch["lig_x"]
         rec_pos = batch["rec_pos"] / self.coord_scale
         lig_pos = batch["lig_pos"] / self.coord_scale
         position_matrix = batch["position_matrix"]
