@@ -205,6 +205,10 @@ class FlowMatchingDock(pl.LightningModule):
                     f_norm = f_norm * torch.sigmoid(-f_norm) * 2
                 elif self.scale_f_norm == "tanh":
                     f_norm = F.tanh(f_norm / 2)
+                if self.scale_f_norm == "div_sigma_max":
+                    f_norm = f_norm / self.tr_sigma_max
+                if self.scale_f_norm == "div_sigma_t":
+                    f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min)
                 elif self.scale_f_norm == "none":
                     pass
                 else:
