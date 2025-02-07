@@ -205,10 +205,10 @@ class FlowMatchingDock(pl.LightningModule):
                     f_norm = f_norm * torch.sigmoid(-f_norm) * 2
                 elif self.scale_f_norm == "tanh":
                     f_norm = F.tanh(f_norm / 2)
-                if self.scale_f_norm == "div_sigma_max":
-                    f_norm = f_norm / self.tr_sigma_max
-                if self.scale_f_norm == "div_sigma_t":
-                    f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min)
+                if self.scale_f_norm == "div_sigma_2_max":
+                    f_norm = f_norm / self.tr_sigma_max ** 2
+                if self.scale_f_norm == "div_sigma_2_t":
+                    f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
                 elif self.scale_f_norm == "none":
                     pass
                 else:
@@ -244,9 +244,9 @@ class FlowMatchingDock(pl.LightningModule):
         # translation loss
         if self.perturb_tr:
             if self.scale_tr_loss_by_sigma_max:
-                tr_loss_scaling_factor = self.tr_sigma_max ** 2
+                tr_loss_scaling_factor = self.tr_sigma_max ** 2 + 1e-6
             elif self.scale_tr_loss_by_sigma_t:
-                tr_loss_scaling_factor = (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
+                tr_loss_scaling_factor = (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2 + 1e-6
             else:
                 tr_loss_scaling_factor = 1.0
             
@@ -303,10 +303,7 @@ class FlowMatchingDock(pl.LightningModule):
                 v_loss = torch.mean((v - vt_gt)**2)
             else:
                 v_loss = torch.mean((v * t - vt_gt)**2)
-            if self.scale_tr_loss_by_sigma_max:
-                v_loss = v_loss / self.tr_sigma_max
-            elif self.scale_tr_loss_by_sigma_t:
-                v_loss = v_loss / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min)
+            v_loss = v_loss / tr_loss_scaling_factor
         else:
             v_loss = torch.tensor(0.0, device=self.device)
 
