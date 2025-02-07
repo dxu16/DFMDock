@@ -383,9 +383,8 @@ class EGNN_Net(nn.Module):
         )
 
         if self.add_t_embedding:
-            self.t_hidden_dim = min(node_dim, edge_dim)
-            self.t_embed_edge = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
-            self.t_embed_node = TimestepEmbedder(hidden_size=self.t_hidden_dim, frequency_embedding_size=inner_dim)
+            self.t_embed_edge = TimestepEmbedder(hidden_size=edge_dim, frequency_embedding_size=inner_dim)
+            self.t_embed_node = TimestepEmbedder(hidden_size=node_dim, frequency_embedding_size=inner_dim)
 
         if self.scale_by_t_mlp:
             # timestep embedding
@@ -449,13 +448,13 @@ class EGNN_Net(nn.Module):
         x = torch.cat([rec_x, lig_x], dim=0)
         node = self.single_embed(x) # [n, c]
         if self.add_t_embedding:
-            node[:, :self.t_hidden_dim] += self.t_embed_node(t)
+            node += self.t_embed_node(t)
 
         # edge feature embedding
         spatial_matrix = get_spatial_matrix(pos)
         edge = self.spatial_embed(spatial_matrix) + self.positional_embed(position_matrix)
         if self.add_t_embedding:
-            edge[:, :self.t_hidden_dim] += self.t_embed_edge(t)
+            edge += self.t_embed_edge(t)
 
         # sample edge_index and get edge_attr
         edge_index, edge_attr = get_knn_and_sample_graph(pos[..., 1, :], edge)
