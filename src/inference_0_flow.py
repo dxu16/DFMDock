@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # import packages
 import os
 from pathlib import Path
+import pickle
 import csv
 import torch
 import numpy as np
@@ -105,6 +106,7 @@ class Sampler:
         self.uniform_sample = self.data_conf.uniform_sample
         self.non_overlap = self.data_conf.non_overlap
         self.apply_ini_rand_rot = self.data_conf.apply_ini_rand_rot
+        self.matched_arctan = self.data_conf.matched_arctan
 
         # set device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -209,6 +211,8 @@ class Sampler:
             rec_pos = batch['rec_pos'].to(self.device).squeeze(0)
             lig_pos = batch['lig_pos'].to(self.device).squeeze(0)
             # position_matrix = batch['position_matrix'].to(self.device).squeeze(0)
+            rec_pos_gt = rec_pos.clone().detach()
+            lig_pos_gt = lig_pos.clone().detach()
 
             batch = {
                 "rec_x": rec_x,
@@ -293,7 +297,7 @@ class Sampler:
 
                     # get metrics
                     metrics = {'id': _id, 'index': str(i)}
-                    metrics.update(self.get_metrics([_rec_pos[-1], _lig_pos[-1]], [rec_pos, lig_pos]))
+                    metrics.update(self.get_metrics([_rec_pos[-1], _lig_pos[-1]], [rec_pos_gt, lig_pos_gt]))
                     metrics.update({'energy': energy.item()})
                     # metrics.update({'pdockq': pdockq.item()})
                     # metrics.update({'num_clashes': num_clashes.item()})
@@ -315,6 +319,11 @@ class Sampler:
 
                     if self.data_conf.out_pdb:
                         self.save_pdb(pred)
+                    
+                    if self.data_conf.out_pos:
+                        out_path = os.path.join(self.data_conf.out_pdb_dir, pred._id + '_p' + pred.index + '.pkl')
+                        with open(out_path, 'wb') as f:
+                            pickle.dump(pred, f)
 
         return metrics_list
 
@@ -510,7 +519,8 @@ class Sampler:
 
         # initialize time steps
         t = torch.ones(batch_size, device=self.device)
-        time_steps = torch.linspace(1., eps, self.data_conf.num_steps, device=self.device)
+        time_steps = torch.linspace(1., 0, self.data_conf.num_steps + 1, device=self.device)
+        time_steps = time_steps[:-1]
         dt = time_steps[0] - time_steps[1]
         
         # save initial coordinates 
@@ -532,12 +542,28 @@ class Sampler:
                 output = self.model(batch) 
 
                 if self.perturb_rot:
-                    rot = output["rot_pred"] * dt
+                    if not self.matched_arctan:
+                        rot = output["rot_pred"] * dt
+                    else:
+                        rot_angle_arctan = output["rot_pred"].norm()
+                        rot_axis = output["rot_pred"] / rot_angle_arctan
+                        rot_angle_t = torch.tan(rot_angle_arctan * np.pi / 2 * t)
+                        rot_angle_t_dt = torch.tan(rot_angle_arctan * np.pi / 2 * (t - dt))
+                        rot_angle = rot_angle_t - rot_angle_t_dt
+                        rot = rot_angle * rot_axis
                 else:
                     rot = torch.zeros((1, 3), device=self.device)
 
                 if self.perturb_tr:
-                    tr = output["tr_pred"] * dt
+                    if not self.matched_arctan:
+                        tr = output["tr_pred"] * dt
+                    else:
+                        tr_mag_arctan = output["tr_pred"].norm()
+                        tr_dir_vec = output["tr_pred"] / tr_mag_arctan
+                        tr_mag_t = torch.tan(tr_mag_arctan * np.pi / 2 * t) * 5
+                        tr_mag_t_dt = torch.tan(tr_mag_arctan * np.pi / 2 * (t - dt)) * 5
+                        tr_mag = tr_mag_t - tr_mag_t_dt
+                        tr = tr_mag * tr_dir_vec
                 else:
                     tr = torch.zeros((1, 3), device=self.device)
 
@@ -683,7 +709,7 @@ class Sampler:
     
 #----------------------------------------------------------------------------
 # Main
-@hydra.main(version_base=None, config_path="/scratch4/jgray21/dxu39/DFMDock/configs", config_name="inference_flow") 
+@hydra.main(version_base=None, config_path="/scratch4/jgray21/dxu39/projects/flow_matching/DFMDock/configs", config_name="inference_flow") 
 def main(config: DictConfig):
     # Print the entire configuration
     print(OmegaConf.to_yaml(config))

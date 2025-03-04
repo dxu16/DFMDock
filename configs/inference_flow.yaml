@@ -10,6 +10,7 @@ data:
   out_trj_dir: ./trjs/
   out_csv_dir: ./csv_files/
   out_csv: test.csv
+  out_pos: False
   num_steps: 40
   num_samples: 1
   tr_sigma: 30.0
@@ -25,4 +26,5 @@ data:
   non_overlap: False
   num_rot: 4
   apply_ini_rand_rot: False
+  matched_arctan: False
   
