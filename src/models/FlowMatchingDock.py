@@ -54,6 +54,7 @@ class FlowMatchingDock(pl.LightningModule):
         self.separate_rot_loss = experiment.separate_rot_loss
 
         self.use_v_loss = experiment.use_v_loss
+        self.match_arctan = experiment.match_arctan
 
         # # diffuser
         # if self.perturb_tr:
@@ -101,6 +102,8 @@ class FlowMatchingDock(pl.LightningModule):
                 axis = np.random.randn(1,3)
                 axis = axis / np.linalg.norm(axis)
                 angle_1 = np.random.randn(1) * (self.rot_sigma_max - self.rot_sigma_min)
+                if self.match_arctan:
+                    angle_1 = np.arctan(angle_1) * 2 / np.pi
                 angle = angle_1 * t.item()
                 rot_1 = axis * angle_1
                 rot_update = axis * angle
@@ -113,22 +116,33 @@ class FlowMatchingDock(pl.LightningModule):
 
             if self.perturb_tr:
                 if self.restricted_perturb_tr:
-                    com_lig = batch["lig_pos"].mean(dim=-2)
-                    com_rec = batch["rec_pos"].mean(dim=-2)
+                    com_lig = batch["lig_pos"].mean(dim=(0, 1))
+                    com_rec = batch["rec_pos"].mean(dim=(0, 1))
                     com_vec = com_lig - com_rec
-                    vec_rot_ang = np.random.randn(1) * self.com_vec_rot_sigma
-                    vec_rot_axis = np.random.randn(1,3)
-                    vec_rot_axis = vec_rot_axis / np.linalg.norm(vec_rot_axis)
+                    com_vec = com_vec / torch.norm(com_vec)
+                    vec_rot_ang = np.random.randn() * self.com_vec_rot_sigma
+                    vec_rot_axis_ortho = np.random.randn(3)
+                    vec_rot_axis_ortho = vec_rot_axis_ortho / np.linalg.norm(vec_rot_axis_ortho)
+                    vec_rot_axis_ortho = torch.from_numpy(vec_rot_axis_ortho).float().to(self.device)
+                    vec_rot_axis = torch.cross(com_vec, vec_rot_axis_ortho)
+                    if torch.norm(vec_rot_axis) < 1e-6:
+                        vec_rot_axis = vec_rot_axis_ortho
                     vec_rot = vec_rot_axis * vec_rot_ang
-                    vec_rot = torch.from_numpy(vec_rot).float().to(self.device)
                     tr_dir_vec = com_vec @ axis_angle_to_matrix(vec_rot).T
                     tr_mag = abs(np.random.randn() * (self.tr_sigma_max - self.tr_sigma_min))
+                    if self.match_arctan:
+                        tr_mag = np.arctan(tr_mag / 5) * 2 / np.pi
                     tr_1 = tr_dir_vec * tr_mag
                     tr_update = tr_1 * t
                 else:
                     # tr_score_scale = self.r3_diffuser.score_scaling(t.item())
                     # tr_update, tr_score_gt = self.r3_diffuser.forward_marginal(t.item())
-                    tr_1 = np.random.randn(1,3) * (self.tr_sigma_max - self.tr_sigma_min)
+                    tr_dir_vec = np.random.randn(1,3)
+                    tr_dir_vec = tr_dir_vec / np.linalg.norm(tr_dir_vec)
+                    tr_mag = np.random.randn() * (self.tr_sigma_max - self.tr_sigma_min)
+                    if self.match_arctan:
+                        tr_mag = np.arctan(tr_mag / 5) * 2 / np.pi
+                    tr_1 = tr_dir_vec * tr_mag
                     tr_update = tr_1 * t.item()
                     tr_1 = torch.from_numpy(tr_1).float().to(self.device)
                     tr_update = torch.from_numpy(tr_update).float().to(self.device)
@@ -205,10 +219,12 @@ class FlowMatchingDock(pl.LightningModule):
                     f_norm = f_norm * torch.sigmoid(-f_norm) * 2
                 elif self.scale_f_norm == "tanh":
                     f_norm = F.tanh(f_norm / 2)
-                if self.scale_f_norm == "div_sigma_2_max":
+                elif self.scale_f_norm == "div_sigma_2_max":
                     f_norm = f_norm / self.tr_sigma_max ** 2
-                if self.scale_f_norm == "div_sigma_2_t":
+                elif self.scale_f_norm == "div_sigma_2_t":
                     f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
+                elif self.scale_f_norm == "div_sigma_t":
+                    f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min)
                 elif self.scale_f_norm == "none":
                     pass
                 else:
@@ -464,7 +480,7 @@ def get_rmsd(pred, label):
 #----------------------------------------------------------------------------
 # Testing run
 
-@hydra.main(version_base=None, config_path="/scratch4/jgray21/lchu11/graylab_repos/DFMDock/configs/model", config_name="FlowMatchingDock.yaml")
+@hydra.main(version_base=None, config_path="/scratch4/jgray21/dxu39/projects/flow_matching/DFMDock/configs/model", config_name="FlowMatchingDock.yaml")
 def main(conf: DictConfig):
     dataset = DockingDataset(
         dataset='dips_train',

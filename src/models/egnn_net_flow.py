@@ -525,7 +525,7 @@ class EGNN_Net(nn.Module):
 
             outputs = {
                 "tr_pred": tr_pred * self.coord_scale,
-                "rot_pred": rot_pred,
+                "rot_pred": rot_pred * (self.coord_scale ** 2),
                 "energy": energy * (self.coord_scale ** 2),
                 "v": v * self.coord_scale,
                 "num_clashes": num_clashes,
