@@ -223,6 +223,8 @@ class FlowMatchingDock(pl.LightningModule):
                     f_norm = f_norm / self.tr_sigma_max ** 2
                 elif self.scale_f_norm == "div_sigma_2_t":
                     f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min) ** 2
+                elif self.scale_f_norm == "div_sigma_max":
+                    f_norm = f_norm / self.tr_sigma_max
                 elif self.scale_f_norm == "div_sigma_t":
                     f_norm = f_norm / (t * self.tr_sigma_max + (1 - t) * self.tr_sigma_min)
                 elif self.scale_f_norm == "none":

@@ -520,8 +520,8 @@ class Sampler:
         # initialize time steps
         t = torch.ones(batch_size, device=self.device)
         time_steps = torch.linspace(1., 0, self.data_conf.num_steps + 1, device=self.device)
-        time_steps = time_steps[:-1]
         dt = time_steps[0] - time_steps[1]
+        time_steps = time_steps[:-1]
         
         # save initial coordinates 
         rec_trj.append(rec_pos)
