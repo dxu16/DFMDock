@@ -40,22 +40,27 @@ class PinderDataset(Dataset):
         self, 
         data_dir,
         test_split: str = 'pinder_s',
-        training: bool = True,
+        mode: str = 'train',
         use_esm: bool = False,
     ):
-        self.training = training
+        self.mode = mode
         self.use_esm = use_esm
 
         # Load the dictionary data
         self.data_dir = data_dir
-        if training:
+        if self.mode == 'train':
             full_index = get_index()
             train_index = get_subsampled_train(full_index)
             train_id = list(train_index.id)
-            self.data_list = [f.name.split('.')[0] for f in Path(self.data_dir).iterdir() if f.name.split('.')[0] in train_id]
-        else:
+            local_id = [f.name.split('.')[0] for f in Path(self.data_dir).iterdir()]
+            self.data_list = list(set(train_id).intersection(set(local_id)))
+        elif self.mode == 'val':
+            self.data_list = [f.name.split('.')[0] for f in Path(self.data_dir).iterdir()]
+        elif self.mode == 'test':
             pindex = get_index()
             self.data_list = list(pindex.query(f'{test_split} == True').id)
+        else:
+            raise ValueError(f'Invalid mode: {self.mode}')
 
         if self.use_esm:
             self.h5f = h5py.File('/scratch16/jgray21/lchu11/data/h5_files/pinder_combined.h5', 'r')
@@ -149,10 +154,12 @@ class PinderDataModule(pl.LightningDataModule):
         self.data_train = PinderDataset(
             data_dir='/scratch4/jgray21/lchu11/data/pinder/train',
             use_esm=self.use_esm,
+            mode='train',
         )
         self.data_val = PinderDataset(
             data_dir='/scratch4/jgray21/lchu11/data/pinder/val',
             use_esm=self.use_esm,
+            mode='val',
         )
 
     def train_dataloader(self):
