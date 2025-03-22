@@ -96,7 +96,7 @@ class PinderDataset(Dataset):
             rec_x = torch.cat([rec_esm, rec_x], dim=-1)
             lig_x = torch.cat([lig_esm, lig_x], dim=-1)
 
-        if self.training:
+        if self.mode == 'train':
             # shuffle the order of rec and lig
             vars_list = [(rec_x, rec_pos), (lig_x, lig_pos)]
             random.shuffle(vars_list)
@@ -187,7 +187,7 @@ if __name__ == '__main__':
     dataset = PinderDataset(
         data_dir='/scratch4/jgray21/lchu11/data/pinder/train',
         test_split='pinder_s',
-        training=True,
+        mode='train',
         use_esm=True,
     )
     print(dataset[0])
