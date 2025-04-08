@@ -226,9 +226,13 @@ class PinderDataset(Dataset):
             return {key: value for key, value in output.items()}
         
         except Exception as e:
-            new_idx = torch.randint(0, len(self.data_index), (1,)).item()
-            logger.warning(f"Error loading {struct_id}: {e}, trying to replace with {self.data_index.iloc[new_idx]['id']}")
-            return self[new_idx]
+            if self.mode == 'train' or self.mode == 'val':
+                new_idx = torch.randint(0, len(self.data_index), (1,)).item()
+                logger.warning(f"Error loading {struct_id}: {e}, trying to replace with {self.data_index.iloc[new_idx]['id']}")
+                return self[new_idx]
+            else:
+                logger.error(f"Error loading {struct_id}: {e}")
+                raise e
 
     def __len__(self):
         return len(self.data_index)
