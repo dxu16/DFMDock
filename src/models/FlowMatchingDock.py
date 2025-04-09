@@ -1,4 +1,5 @@
 import copy
+import logging
 import hydra
 import torch
 import torch.nn as nn
@@ -13,6 +14,8 @@ from models.egnn_net_flow import EGNN_Net
 from utils.geometry import axis_angle_to_matrix
 from utils.crop import get_crop_idxs, get_crop, get_position_matrix
 from utils.loss import distogram_loss
+
+logger = logging.getLogger(__name__)
 
 #----------------------------------------------------------------------------
 # Main wrapper for training the model
@@ -358,7 +361,6 @@ class FlowMatchingDock(pl.LightningModule):
             conf_loss = torch.tensor(0.0, device=self.device)
 
         # total losses
-        loss = tr_loss + rot_loss + v_loss + 0.1 * (ec_loss + el_loss+ conf_loss + dist_loss + ires_loss)
         losses = {
             "tr_loss": tr_loss, 
             "rot_loss": rot_loss, 
@@ -368,8 +370,13 @@ class FlowMatchingDock(pl.LightningModule):
             "dist_loss": dist_loss, 
             "ires_loss": ires_loss,
             "conf_loss": conf_loss,
-            "loss": loss,
         }
+        for key, value in losses.items():
+            if torch.isnan(value).any():
+                logger.warning(f"NaN detected in {key} loss")
+                losses[key] = losses[key].new_tensor(0., requires_grad=True)
+        loss = losses["tr_loss"] + losses["rot_loss"] + losses["v_loss"] + 0.1 * (losses["ec_loss"] + losses["el_loss"]+ losses["conf_loss"] + losses["dist_loss"] + losses["ires_loss"])
+        losses['loss'] = loss
 
         return losses
 
