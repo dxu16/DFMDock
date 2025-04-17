@@ -139,6 +139,8 @@ def randint(lower, upper):
 def get_crop_idxs(batch, crop_size):
     rec_pos = batch["rec_pos"]
     lig_pos = batch["lig_pos"]
+    rec_size = rec_pos.size(0)
+    lig_size = lig_pos.size(0)
     n = rec_pos.size(0) + lig_pos.size(0)
     pos = torch.cat([rec_pos, lig_pos], dim=0)
     asym_id = torch.zeros(n, device=pos.device).long()
@@ -149,10 +151,33 @@ def get_crop_idxs(batch, crop_size):
 
     if num_res <= crop_size:
         crop_idxs = torch.arange(num_res)
-    elif use_spatial_crop:
-        crop_idxs = get_spatial_crop_idx(pos, asym_id, crop_size=crop_size)
     else:
-        crop_idxs = get_contiguous_crop_idx(asym_id, crop_size=crop_size)
+        # Ensure we have at least one residue from each part (receptor and ligand)
+        min_rec = min(100, rec_size)  # At least 100 receptor residue (if available)
+        min_lig = min(100, lig_size)  # At least 100 ligand residue (if available)
+
+        if use_spatial_crop:
+            proposed_idxs = get_spatial_crop_idx(pos, asym_id, crop_size=crop_size)
+        else:
+            proposed_idxs = get_contiguous_crop_idx(asym_id, crop_size=crop_size)
+        # Check if the proposed crop has both receptor and ligand residues
+        has_receptor = torch.any((proposed_idxs < rec_size))
+        has_ligand = torch.any((proposed_idxs >= rec_size))
+        
+        if has_receptor and has_ligand:
+            # Good crop, use it
+            crop_idxs = proposed_idxs
+        else:
+            if not has_receptor:
+                # Receptor is missing, add some receptor residues
+                rec_idxs = torch.arange(min_rec)
+                proposed_idxs[:min_rec] = rec_idxs
+            elif not has_ligand:
+                # Ligand is missing, add some ligand residues
+                lig_idxs = torch.arange(rec_size, rec_size + min_lig)
+                proposed_idxs[-min_lig:] = lig_idxs
+            
+            crop_idxs = proposed_idxs
 
     crop_idxs = crop_idxs.to(pos.device)
 

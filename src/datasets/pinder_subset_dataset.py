@@ -159,6 +159,7 @@ class PinderDataset(Dataset):
                 part_seq = ''.join(part_seq[i] for i in part_has_ca)
                 if self.use_esm:
                     part_esm_embedding = np.load(self.esm_cache / f"{part_id}.npy")
+                    part_esm_embedding = part_esm_embedding[1:-1] #Remove BOS and EOS
                     part_esm_embedding = part_esm_embedding[resolved_index, :]
                     part_esm_embedding = part_esm_embedding[part_has_ca, :]
                     assert part_esm_embedding.shape[0] == len(part_seq), "Mismatched esm embedding and seq length"
